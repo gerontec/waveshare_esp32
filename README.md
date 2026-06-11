@@ -54,11 +54,11 @@ This is more than sensors/switches/automations in YAML:
 | 6 | 7800 W | 0 | 1 | 1 |
 | 7 | 11400 W | 1 | 1 | 1 |
 
-## Control concept (fox2db v3.3.30)
+## Control concept (fox2db v3.3.33)
 Each **60 s** cycle (`step()` in `fox2db_logic.h`):
 
-1. `excess = pcc + ebox_eff + bat1`
-2. `budget = excess + MAX_GRID_DRAW (900 W)` → pick the highest state whose power ≤ budget (`INSUFFICIENT_EXCESS` if that is 0)
+1. `excess = pcc + ebox_eff + bat1_eff`, where `bat1_eff = (bat1 < 0 ? bat1 : bat1 · bat1_factor)` — Sofar discharge counts fully as a deficit, charge only fractionally (`bat1_factor`, default 0.5, MQTT `sofar/bat1_factor`)
+2. `budget = excess + MAX_GRID_DRAW (900 W)` → pick the highest state whose power ≤ budget (`INSUFFICIENT_EXCESS` if `excess < MIN_EXCESS = 2500 W`)
 3. **ramp‑limit** (max one power step up per cycle)
 4. **guards** (hard): charge‑block / battery‑full / critical‑SoC / deep‑discharge
 5. **blocking**: `EMERGENCY_FORCE` (pcc < −1020 W, immediate shed) · `SWEET_SPOT_HOLD` (|pcc| < 160 W) · `TREND_BLOCK` · `BAT_GUARD_BLOCK` (bat1 < −110 W) · `STABILIZING` (2 cycles) · `HYSTERESIS` (505 W)
@@ -81,7 +81,7 @@ forecast. Details: [`waveshare_6ch_esp32s3.md`](waveshare_6ch_esp32s3.md#firmwar
 | IN | `ebox/pwr` | `{"soc":…,"power_w":…}` SOC2 + EBox power |
 | OUT | `sofar/state` | decision (state, trace, excess, ratio, ladesperre, do4, …) |
 | OUT | `sofar/waveshare/status` · `soyo/calc` | telemetry / Soyo setpoint |
-| CTRL | `sofar/auto` · `sofar/ladesperre` · `sofar/ratio` · `soyo/set` | `{"ENABLE":0/1}` etc. |
+| CTRL | `sofar/auto` · `sofar/ladesperre` · `sofar/ratio` · `sofar/bat1_factor` · `soyo/set` | `{"ENABLE":0/1}`, `{"FACTOR":0.3}` etc. |
 
 ## Build & flash
 ```bash
@@ -100,7 +100,7 @@ Set `wifi_ssid` / `wifi_password` in the `substitutions:` block first.
 | `fox2db_logic.h` | C++ controller: decide / guards / blocking + solar forecast + charge‑block |
 | `fox2db_model.py` · `soyo_model.py` | math reference models + self‑tests |
 | `validate_model.py` | one‑step‑ahead validation against logged decisions |
-| `make_fox2db_pdf.py` · `make_soyo_pdf.py` | generate the model PDFs |
+| `make_latex_pdfs.py` | generate the model PDFs (LaTeX) |
 | `fox2db_model.pdf` · `soyo_model.pdf` | math model docs (formulas, plots, validation) |
 
 ## Safety

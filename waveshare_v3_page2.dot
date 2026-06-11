@@ -1,7 +1,7 @@
 
 digraph WaveshareStep {
     graph [
-        label="fox2db v3.3.30 — step() Gesamtablauf (alle 60s, fox2db_logic.h)"
+        label="fox2db v3.3.33 — step() Gesamtablauf (alle 60s, fox2db_logic.h)"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=polyline nodesep=0.4 ranksep=0.5
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -22,11 +22,11 @@ digraph WaveshareStep {
 
     d_en [shape=diamond fillcolor="#fce8e8" label="ladesperre_enable?"]
     d_win [shape=diamond fillcolor="#fce8e8" label="in_window?\nhas_peak && win_end>=0\n&& !peak_today\n&& local_hour<=peak_h"]
-    d_rat [shape=diamond fillcolor="#fce8e8" label="0 <= ratio_ist\n<= ratio_th?\n(belegtes Gutwetter)"]
-    r_lock [shape=box fillcolor="#f8d7da" label="ladesperre = true"]
-    r_free [shape=box fillcolor="#d4edda" label="ladesperre = false"]
+    d_rat [shape=diamond fillcolor="#fce8e8" label="Latch (Hysterese):\nLOCK ratio_ist<=ratio_th\nRELEASE ratio_ist>=ratio_th+0.15"]
+    r_lock [shape=box fillcolor="#f8d7da" label="ladesperre = latched"]
+    r_free [shape=box fillcolor="#d4edda" label="ladesperre = false\n(außerhalb Fenster)"]
 
-    s7 [shape=box fillcolor="#e2d9f3" label="best = decide(in, relay_st, prot, ...)\n-> best, trace, excess"]
+    s7 [shape=box fillcolor="#e2d9f3" label="best = decide(in, relay_st, prot, bat1_factor, ...)\n-> best, trace, excess"]
     s8 [shape=box fillcolor="#f8d7da" label="best = apply_guards(best, soc2, ladesperre)\n-> guard_fired"]
     s9 [shape=box fillcolor="#e2d9f3" label="drop_rate = (excess - last_excess)/30\nlast_excess = excess"]
     d_g [shape=diamond fillcolor="#fce8e8" label="guard_fired?"]

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ════════════════════════════════════════════════════════════════════════════
-#  Diagramm-Generator — NUR Waveshare-Version (fox2db v3.3.30, ESP32-S3 6CH)
+#  Diagramm-Generator — NUR Waveshare-Version (fox2db v3.3.33, ESP32-S3 6CH)
 #  Quelle: waveshare/fox2db_logic.h + waveshare/waveshare_6ch_esp32s3.md
 #  Mehrseitiges PDF, Mindest-Schriftgröße 10.
 # ════════════════════════════════════════════════════════════════════════════
@@ -13,7 +13,7 @@ OUT = Path(__file__).parent
 PAGE1 = """
 digraph WaveshareArch {
     graph [
-        label="fox2db v3.3.30 — Waveshare ESP32-S3 6CH — Architektur (fox2db_logic.h, autonom auf dem ESP)"
+        label="fox2db v3.3.33 — Waveshare ESP32-S3 6CH — Architektur (fox2db_logic.h, autonom auf dem ESP)"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=ortho nodesep=0.6 ranksep=0.8
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -27,7 +27,7 @@ digraph WaveshareArch {
 
         MQTT_PCC [shape=cylinder fillcolor="#dddddd" label="WR-Daten (MQTT)\\npcc, bat1, soc1"]
         MQTT_EBOX [shape=cylinder fillcolor="#dddddd" label="ebox/pwr\\nsoc2, power_w (signiert!),\\ncurrent_a, packs"]
-        MQTT_RATIO [shape=cylinder fillcolor="#dddddd" label="sofar/ratio\\nratio_th (default 0.5)\\nsofar/ladesperre, sofar/auto"]
+        MQTT_RATIO [shape=cylinder fillcolor="#dddddd" label="sofar/ratio\\nratio_th (default 0.5)\\nsofar/bat1_factor (default 0.5)\\nsofar/ladesperre, sofar/auto"]
         MQTT_OUT [shape=cylinder fillcolor="#dddddd" label="sofar/state · sofar/waveshare/status\\nsoyo/calc · soyo/sent (retain)"]
         Relays123 [shape=component fillcolor="#dddddd" label="CH1-CH3 (GPIO1/2/41)\\nEBox-State 0..7 binär"]
         Relay4 [shape=component fillcolor="#fce8e8" label="CH4 (GPIO42)\\nDO4 -> WR2 abregeln\\n3s-Puls"]
@@ -39,7 +39,7 @@ digraph WaveshareArch {
         fontname="Helvetica-Bold" fontsize=10 color="#28a745"
 
         in_struct [shape=box fillcolor="#b8dfc4" label="Inputs{pcc, bat1, soc1, soc2, ebox_w}\\nsoc2 < 0 = unbekannt"]
-        state_ram [shape=box fillcolor="#b8dfc4" label="State (RAM, Cron-übergreifend)\\nrelay_st, stable, last_excess, prot,\\npeak_today, pcc_buf[10]\\n(Reset um Mitternacht, weg bei Reboot)"]
+        state_ram [shape=box fillcolor="#b8dfc4" label="State (RAM, Cron-übergreifend)\\nrelay_st, stable, last_excess, prot,\\npeak_today, ladesperre_latched, pcc_buf[10]\\n(Reset um Mitternacht, weg bei Reboot)"]
     }
 
     subgraph cluster_forecast {
@@ -54,7 +54,7 @@ digraph WaveshareArch {
         label="DECISION-PIPELINE (step())" style="filled" fillcolor="#e2d9f3"
         fontname="Helvetica-Bold" fontsize=10 color="#6f42c1"
 
-        ladesperre [shape=box fillcolor="#d4c5f0" label="LADESPERRE-Zustandsmaschine\\nin_window && 0 <= ratio_ist <= ratio_th\\n(nur bei BELEGTEM Gutwetter)"]
+        ladesperre [shape=box fillcolor="#d4c5f0" label="LADESPERRE-Latch (Hysterese)\\nLOCK: ratio_ist <= ratio_th\\nRELEASE: ratio_ist >= ratio_th+0.15\\n(nur bei BELEGTEM Gutwetter)"]
         decide_fn [shape=box fillcolor="#c9b8f0" label="decide()  dominanzgeordnet\\nSOC_UNKNOWN / PCC_OVER_20KW /\\nEMERGENCY / INSUFFICIENT /\\nPOWER_MATCHING + RAMP_LIMITED"]
         guards [shape=box fillcolor="#f8d7da" label="apply_guards() — HARD\\nLADESPERRE / BATTERY_FULL /\\nCRITICAL_SOC (feuert -> Blocking skip)"]
         blocking [shape=box fillcolor="#d4c5f0" label="apply_blocking()\\nUP: SWEET_SPOT/TREND/BAT_GUARD\\nDOWN: STABILIZING/HYSTERESIS\\nEMERGENCY_FORCE bypass"]
@@ -102,7 +102,7 @@ digraph WaveshareArch {
 PAGE2 = """
 digraph WaveshareStep {
     graph [
-        label="fox2db v3.3.30 — step() Gesamtablauf (alle 60s, fox2db_logic.h)"
+        label="fox2db v3.3.33 — step() Gesamtablauf (alle 60s, fox2db_logic.h)"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=polyline nodesep=0.4 ranksep=0.5
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -123,11 +123,11 @@ digraph WaveshareStep {
 
     d_en [shape=diamond fillcolor="#fce8e8" label="ladesperre_enable?"]
     d_win [shape=diamond fillcolor="#fce8e8" label="in_window?\\nhas_peak && win_end>=0\\n&& !peak_today\\n&& local_hour<=peak_h"]
-    d_rat [shape=diamond fillcolor="#fce8e8" label="0 <= ratio_ist\\n<= ratio_th?\\n(belegtes Gutwetter)"]
-    r_lock [shape=box fillcolor="#f8d7da" label="ladesperre = true"]
-    r_free [shape=box fillcolor="#d4edda" label="ladesperre = false"]
+    d_rat [shape=diamond fillcolor="#fce8e8" label="Latch (Hysterese):\\nLOCK ratio_ist<=ratio_th\\nRELEASE ratio_ist>=ratio_th+0.15"]
+    r_lock [shape=box fillcolor="#f8d7da" label="ladesperre = latched"]
+    r_free [shape=box fillcolor="#d4edda" label="ladesperre = false\\n(außerhalb Fenster)"]
 
-    s7 [shape=box fillcolor="#e2d9f3" label="best = decide(in, relay_st, prot, ...)\\n-> best, trace, excess"]
+    s7 [shape=box fillcolor="#e2d9f3" label="best = decide(in, relay_st, prot, bat1_factor, ...)\\n-> best, trace, excess"]
     s8 [shape=box fillcolor="#f8d7da" label="best = apply_guards(best, soc2, ladesperre)\\n-> guard_fired"]
     s9 [shape=box fillcolor="#e2d9f3" label="drop_rate = (excess - last_excess)/30\\nlast_excess = excess"]
     d_g [shape=diamond fillcolor="#fce8e8" label="guard_fired?"]
@@ -167,7 +167,7 @@ digraph WaveshareStep {
 PAGE3 = """
 digraph WaveshareDecision {
     graph [
-        label="fox2db v3.3.30 — decide() / apply_guards() / apply_blocking() im Detail"
+        label="fox2db v3.3.33 — decide() / apply_guards() / apply_blocking() im Detail"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=polyline nodesep=0.4 ranksep=0.5
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -178,7 +178,7 @@ digraph WaveshareDecision {
     Start [shape=oval fillcolor="#e2d9f3" label="decide()"]
     End [shape=oval fillcolor="#e2d9f3" label="-> (best, trace, excess)"]
 
-    excess_calc [shape=box fillcolor="#c9b8f0" label="ebox_eff = relay_st>0 ? max(ebox_w, state_power(relay_st)) : 0\\nexcess = pcc + ebox_eff + bat1"]
+    excess_calc [shape=box fillcolor="#c9b8f0" label="ebox_eff = relay_st>0 ? max(ebox_w, state_power(relay_st)) : 0\\nbat1_eff = bat1<0 ? bat1 : bat1*bat1_factor\\nexcess = pcc + ebox_eff + bat1_eff"]
     d_unk [shape=diamond fillcolor="#fce8e8" label="soc2 < 0?\\n(unbekannt)"]
     r_unk [shape=box fillcolor="#fce8e8" label="return relay_st\\nEBOX_SOC_UNKNOWN_HOLD"]
     d_pcc [shape=diamond fillcolor="#f8d7da" label="pcc>20kW &&\\nsoc2<100?"]
@@ -187,9 +187,9 @@ digraph WaveshareDecision {
     d_prot2 [shape=diamond fillcolor="#fce8e8" label="soc2 < 7%?"]
     r_emerg [shape=box fillcolor="#fce8e8" label="return 1\\nEMERGENCY_CHARGE_TO_7%"]
     r_target [shape=box fillcolor="#fce8e8" label="return 0\\nCHARGE_TARGET_REACHED"]
-    pm [shape=box fillcolor="#c9b8f0" label="POWER_MATCHING\\nbudget = excess + 900W (MAX_GRID_DRAW)\\nbest = höchste state_power <= budget"]
-    d_zero [shape=diamond fillcolor="#fce8e8" label="best == 0?\\n(Überschuss < State 1)"]
+    d_excess [shape=diamond fillcolor="#fce8e8" label="excess < 2500W?\\n(MIN_EXCESS)"]
     r_insuf [shape=box fillcolor="#fce8e8" label="return 0\\nINSUFFICIENT_EXCESS"]
+    pm [shape=box fillcolor="#c9b8f0" label="POWER_MATCHING\\nbudget = excess + 900W (MAX_GRID_DRAW)\\nbest = höchste state_power <= budget"]
     d_ramp [shape=diamond fillcolor="#fff3cd" label="best > relay_st &&\\nbest > next_up\\n(SORTED_STATES)?"]
     r_ramp [shape=box fillcolor="#fff3cd" label="best = next_state_up\\nRAMP_LIMITED"]
 
@@ -222,15 +222,15 @@ digraph WaveshareDecision {
     d_pcc -> d_prot [label="NEIN" color="green"]
     r_pcc -> End
     d_prot -> d_prot2 [label="JA" color="orange"]
-    d_prot -> pm [label="NEIN" color="green"]
+    d_prot -> d_excess [label="NEIN" color="green"]
     d_prot2 -> r_emerg [label="JA" color="red"]
     d_prot2 -> r_target [label="NEIN" color="green"]
     r_emerg -> End
     r_target -> End
-    pm -> d_zero
-    d_zero -> r_insuf [label="JA" color="red"]
-    d_zero -> d_ramp [label="NEIN" color="green"]
+    d_excess -> r_insuf [label="JA" color="red"]
+    d_excess -> pm [label="NEIN" color="green"]
     r_insuf -> End
+    pm -> d_ramp
     d_ramp -> r_ramp [label="JA" color="orange"]
     d_ramp -> End [label="NEIN" color="green"]
     r_ramp -> End
@@ -266,7 +266,7 @@ digraph WaveshareDecision {
 PAGE4 = """
 digraph WaveshareSoyo {
     graph [
-        label="fox2db v3.3.30 — LADESPERRE-Logik + Soyo-Entladung (RS485)"
+        label="fox2db v3.3.33 — LADESPERRE-Logik + Soyo-Entladung (RS485)"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=polyline nodesep=0.4 ranksep=0.5
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -283,8 +283,8 @@ digraph WaveshareSoyo {
         L2 [shape=diamond fillcolor="#fce8e8" label="local_hour <= peak_h?"]
         L3 [shape=diamond fillcolor="#fce8e8" label="!peak_today?\\n(pcc hat 20kW\\nnoch nicht erreicht)"]
         L4 [shape=diamond fillcolor="#fff3cd" label="ratio_ist gültig\\n(>= 0)?"]
-        L5 [shape=diamond fillcolor="#fff3cd" label="ratio_ist <= ratio_th?\\n(default 0.5,\\nMQTT sofar/ratio)"]
-        LON [shape=box fillcolor="#f8d7da" label="LADESPERRE AKTIV\\n-> Guard -> State 0\\nbelegtes Gutwetter"]
+        L5 [shape=diamond fillcolor="#fff3cd" label="Latch (Hysterese):\\nLOCK ratio_ist<=ratio_th\\nRELEASE ratio_ist>=ratio_th+0.15\\n(default 0.5, MQTT sofar/ratio)"]
+        LON [shape=box fillcolor="#f8d7da" label="LADESPERRE AKTIV (latched)\\n-> Guard -> State 0\\nbelegtes Gutwetter"]
         LOFF [shape=box fillcolor="#d4edda" label="LADESPERRE OFF (Default)\\nSchlechtwetter / unbeurteilbar /\\nPeak gesehen / Stunde überschritten"]
 
         L0 -> L1
@@ -296,8 +296,8 @@ digraph WaveshareSoyo {
         L3 -> LOFF [label="NEIN\\npeak_today" color="#888888"]
         L4 -> L5 [label="JA" color="green"]
         L4 -> LOFF [label="NEIN\\nratio<0 unbeurteilbar" color="#888888"]
-        L5 -> LON [label="JA" color="red"]
-        L5 -> LOFF [label="NEIN\\nratio>th Schlechtwetter" color="orange"]
+        L5 -> LON [label="latched" color="red"]
+        L5 -> LOFF [label="released\\nratio>=th+0.15 Schlechtwetter" color="orange"]
     }
 
     subgraph cluster_soyo {

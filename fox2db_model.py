@@ -11,7 +11,8 @@ Hysterese). Kein PID, kein LTI. Zustand x = (s, c):
 Rekursion pro 60-s-Takt:
     ebox_eff = max(ebox, P[s])      falls s>0, sonst 0          (Selbstkopplung)
     E        = pcc + ebox_eff                                   (Überschuss)
-    target   = Q(E + MAX_GRID_DRAW)                             (Quantisierer; 0 = unzureichend)
+    target   = 0                    falls E < MIN_EXCESS
+             = Q(E + MAX_GRID_DRAW) sonst                       (Quantisierer)
     ramped   = ramp(target, s)                                  (Hochrampe ≤1 Stufe)
     s'       = blocking(ramped, s, c, pcc)                      (Hysterese/Schutz)
 
@@ -27,6 +28,7 @@ from typing import Tuple, Callable
 P            = [0, 3000, 3650, 6650, 3900, 7100, 7800, 11400]   # State → Leistung [W]
 SORTED       = [0, 1, 2, 4, 3, 5, 6, 7]                          # nach Leistung aufsteigend
 RANK         = {s: i for i, s in enumerate(SORTED)}             # State → Leistungs-Rang
+MIN_EXCESS       = 2500.0   # Mindest-Überschuss zum Laden (State 1)
 MAX_GRID_DRAW    = 900.0    # G — erlaubter Netzbezug ins Budget
 HYSTERESIS       = 505.0    # H
 STABILIZATION    = 2        # N
@@ -36,6 +38,7 @@ EMERGENCY_IMPORT = MAX_GRID_DRAW + EMERGENCY_MARGIN   # = 1020 (an G gekoppelt)
 SWEET_SPOT_PCC   = 160.0    # |pcc| darunter ⇒ Sweet-Spot (kein Hochschalten)
 BAT_DISCHARGE_TH = -110.0   # bat1 darunter ⇒ Sofar entlädt ⇒ kein Hochschalten
 MAX_DROP_RATE    = -20.0    # Excess-Steigung [W/s] darunter ⇒ Trendwende
+BAT1_CHARGE_FACTOR = 0.5    # Anteil der Sofar-Ladung (bat1>0), der als EBox-Überschuss zählt (0..1)
 
 
 # ── Quantisierer Q(B): höchster State mit P[s] ≤ B ───────────────────────────
@@ -51,8 +54,9 @@ def quantize(B: float) -> int:
 def target_state(s_prev: int, pcc: float, ebox: float) -> Tuple[int, float, str]:
     ebox_eff = max(ebox, float(P[s_prev])) if s_prev > 0 else 0.0
     E = pcc + ebox_eff
-    t = quantize(E + MAX_GRID_DRAW)
-    return t, E, ("INSUFFICIENT_EXCESS" if t == 0 else "POWER_MATCHING")
+    if E < MIN_EXCESS:
+        return 0, E, "INSUFFICIENT_EXCESS"
+    return quantize(E + MAX_GRID_DRAW), E, "POWER_MATCHING"
 
 
 # ── Ramp-Varianten (einziger Unterschied der beiden Modelle) ─────────────────
@@ -137,9 +141,12 @@ def _step_full(s: int, c: int, last_excess: float, pcc: float, ebox: float,
                bat1: float, ramp: Callable[[int, int], Tuple[int, bool]]
                ) -> Tuple[int, int, float, str]:
     ebox_eff = max(ebox, float(P[s])) if s > 0 else 0.0
-    excess = pcc + ebox_eff + bat1
-    target = quantize(excess + MAX_GRID_DRAW)
-    trace = "INSUFFICIENT_EXCESS" if target == 0 else "POWER_MATCHING"
+    bat1_eff = bat1 if bat1 < 0 else bat1 * BAT1_CHARGE_FACTOR  # Sofar-Ladung zählt nur anteilig
+    excess = pcc + ebox_eff + bat1_eff
+    if excess < MIN_EXCESS:
+        target, trace = 0, "INSUFFICIENT_EXCESS"
+    else:
+        target, trace = quantize(excess + MAX_GRID_DRAW), "POWER_MATCHING"
     ramped, capped = ramp(target, s)
     if capped:
         trace += "|RAMP_LIMITED"
@@ -163,7 +170,7 @@ def hold_band(s: int) -> Tuple[float, float]:
     """pcc-Intervall, in dem State s gehalten wird (untere, obere Grenze)."""
     higher = [P[x] for x in range(8) if P[x] > P[s]]
     upper = (min(higher) - P[s] - MAX_GRID_DRAW) if higher else float("inf")
-    lower = -MAX_GRID_DRAW                       # darunter: Abregeln (EMERGENCY/down)
+    lower = max(-MAX_GRID_DRAW, MIN_EXCESS - P[s])  # darunter: Abregeln (MIN_EXCESS/EMERGENCY)
     return lower, upper
 
 
@@ -307,6 +314,11 @@ def _run_tests() -> None:
     # 7f HYSTERESIS jetzt erreichbar: down mit kleinem Sprung (7100→6650, gap 450<505), c≥2
     s, c, le, tr = step_full_literal(5, 5, 0.0, -1000.0, 7100.0, -200.0)
     check(s == 5 and "HYSTERESIS" in tr, "HYSTERESIS: down 5→3 geblockt (gap 450<505)")
+    # 7g Sofar-Ladung (bat1>0) zählt nur anteilig (BAT1_CHARGE_FACTOR=0.5) als Überschuss
+    s, c, le, tr = step_full_literal(0, 0, 0.0, 1000.0, 0.0, 2500.0)
+    check(s == 0, "bat1=+2500 zu 50%: excess=1000+1250=2250<2500 → State 0 (kein Laden)")
+    s, c, le, tr = step_full_literal(0, 0, 0.0, 3000.0, 0.0, 2500.0)
+    check(s > 0, "echter Export 3000W → excess=3000+1250=4250 → lädt")
 
     print("8) Physikalische Grenzen (Sicherung 3×50A, PV 35kWp, bat1 5kWh, bat2 30kWh):")
     limits_report()

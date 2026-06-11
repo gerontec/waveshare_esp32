@@ -87,8 +87,10 @@ apply_blocking() → SWEET_SPOT_HOLD / TREND_BLOCK / BAT_GUARD_BLOCK (hoch)
 ```
 
 **Key-Parameter:**
-- `MIN_EXCESS = 1200 W` — Mindestüberschuss für Laden
-- `MAX_GRID_DRAW = 1200 W` — max. erlaubter Netzbezug beim Schalten
+- `MIN_EXCESS = 2500 W` — Mindestüberschuss für Laden
+- `MAX_GRID_DRAW = 900 W` — max. erlaubter Netzbezug beim Schalten
+- `BAT_DISCHARGE_TH = -110 W` — bat1 darunter (Sofar entlädt) ⇒ kein Hochschalten
+- `bat1_factor = 0.5` — Anteil der Sofar-**Ladung** (bat1>0) im Überschuss (MQTT `sofar/bat1_factor`)
 - `HYSTERESIS = 505 W` — Mindest-Leistungsdiff für Runterschalten
 - `STABILIZATION = 2` — Zyklen stabil vor Runterschalten
 - `PCC_PEAK_TH = 20000 W` — Schwelle für DO4-Trigger / LADESPERRE-Freigabe
@@ -103,7 +105,10 @@ damit er den Mittagspeak schluckt statt DO4-Abregelung auszulösen.
 
 ```
 in_window  = has_peak && win_end_h >= 0 && !peak_today && local_hour <= peak_h
-ladesperre = in_window && ratio_ist >= 0 && ratio_ist <= ratio_th
+# Latch mit Hysterese gegen Flattern an der Ratio-Schwelle (seit v3.3.32):
+#   LOCK    bei belegtem Gutwetter:  ratio_ist <= ratio_th
+#   RELEASE erst bei klarem Schlechtwetter: ratio_ist >= ratio_th + 0.15
+ladesperre = in_window && ladesperre_latched
 ```
 
 `ratio_ist = (dc_expected − (pcc_avg + ebox + bat1)) / dc_expected` — Anteil der
@@ -114,15 +119,16 @@ gegenüber dem Klarhimmel-Modell fehlenden Leistung. Wird jede Minute neu berech
 - Modell sagt heute >20 kW-Peak (`has_peak`) **und**
 - aktuelle Stunde ≤ Peak-Stunde (`local_hour <= peak_h`) **und**
 - PCC hat 20 kW heute noch nicht erreicht (`!peak_today`) **und**
-- **gültige** Ist-Ratio ≤ Schwelle (`ratio_th`, default 0.5) → belegtes Gutwetter
+- Latch ge**LOCK**t: **gültige** Ist-Ratio ≤ Schwelle (`ratio_th`, default 0.5) → belegtes Gutwetter
 
 **Sperre OFF** (Laden frei) sobald:
-- `ratio_ist > ratio_th` → Schlechtwetter (Klarhimmel bleibt aus)
-- `ratio_ist < 0` → **Wetter unbeurteilbar** (Boot, Nacht, DC<5 kW) → Default OFF
+- Latch ge**RELEASE**t: `ratio_ist ≥ ratio_th + 0.15` → klares Schlechtwetter (Hysterese gegen Flattern)
+- `ratio_ist < 0` → **Wetter unbeurteilbar** (Boot, Nacht, DC<5 kW) → Latch hält Zustand
 - `pcc > 20 kW` → `peak_today=true`, Peak gesehen, ab jetzt laden
-- `local_hour > peak_h` → Peak-Stunde überschritten, kein 20 kW-Peak mehr möglich
+- `local_hour > peak_h` → Peak-Stunde überschritten (Fenster verlassen → Latch reset)
 
 Die Schwelle `ratio_th` ist zur Laufzeit per MQTT änderbar (`sofar/ratio`, default 0.5).
+Der Latch-Zustand `ladesperre_latched` persistiert im RAM (Reset um Mitternacht / beim Verlassen des Fensters).
 `peak_today` verhindert Oszillation nach Freigabe durch PCC-Abfall beim Laden.
 
 ### DC-Klarhimmel-Modell (Meinel)
@@ -201,7 +207,7 @@ MQTT `soyo/calc`: `{"W":468,"soc2":63.1,"stale":0}`
   "soc2":        68.4,
   "soc1":        37.0,
   "ebox":        2982,
-  "excess":      5910,
+  "excess":      4660,
   "dc_expected": 29548,
   "dc_delta":    27108,
   "ratio_ist":   0.92,
@@ -222,16 +228,17 @@ MQTT `soyo/calc`: `{"W":468,"soc2":63.1,"stale":0}`
 | `state` | 0–7 | Entschiedener Lade-State (Bitmask CH1–CH3) |
 | `changed` | 0/1 | Relais wurde in diesem Zyklus geschaltet |
 | `pcc` | W | PCC-Leistung (+ = Einspeisung, − = Bezug) |
-| `bat1` | W | Sofar-Batterie (+ = Entladung, − = Ladung) |
+| `bat1` | W | Sofar-Batterie (+ = Ladung, − = Entladung) |
 | `soc2` | % | EBox2-Ladestand |
 | `soc1` | % | Sofar-Batterie-Ladestand |
 | `ebox` | W | EBox2-Leistung (aus MQTT `ebox/pwr`) |
-| `excess` | W | Berechneter Überschuss = pcc + ebox_eff + bat1 |
+| `excess` | W | Berechneter Überschuss = pcc + ebox_eff + bat1_eff;  bat1_eff = (bat1<0 ? bat1 : bat1·bat1_factor) — Entladung voll, Ladung anteilig |
 | `dc_expected` | W | Klarhimmel-Modell Ertrag jetzt |
 | `dc_delta` | W | dc_expected − (pcc + ebox + bat1) |
 | `ratio_ist` | 0–1+ | Ist-Wetter-Ratio (Anteil fehlender Klarhimmel-Leistung); `-1` = unbeurteilbar |
 | `ratio_th` | 0–1 | Schwelle: ab `ratio_ist ≤ ratio_th` greift LADESPERRE (MQTT `sofar/ratio`, default 0.5) |
-| `ladesperre` | 0/1 | LADESPERRE aktiv |
+| `bat1_f` | 0–1 | Anteil der Sofar-Ladung (bat1>0), der als Überschuss zählt (MQTT `sofar/bat1_factor`, default 0.5) |
+| `ladesperre` | 0/1 | LADESPERRE aktiv (Latch mit Hysterese ±0.15 um `ratio_th`) |
 | `do4` | 0/1 | DO4-Puls ausgelöst |
 | `peak_h` | h | Stunde des heutigen DC-Peaks (−1 = kein Peak >20kW) |
 | `win_end_h` | h | Letzte Stunde mit dc_expected >20kW |
@@ -245,7 +252,7 @@ MQTT `soyo/calc`: `{"W":468,"soc2":63.1,"stale":0}`
 | trace | Bedeutung |
 |---|---|
 | `POWER_MATCHING (Excess: Xw, Budget: Yw)` | Normalbetrieb, bester State gewählt |
-| `INSUFFICIENT_EXCESS (XW)` | Überschuss < 1200W → State 0 |
+| `INSUFFICIENT_EXCESS (XW)` | Überschuss < 2500W → State 0 |
 | `PCC_OVER_20KW (SOC=X% StateA→B)` | PCC >20kW, State erhöht |
 | `RAMP_LIMITED (A->B)` | Hochschalten auf max. nächsten State begrenzt |
 | `SWEET_SPOT_HOLD` | PCC nahe 0, kein Hochschalten |
@@ -290,6 +297,7 @@ MQTT `soyo/calc`: `{"W":468,"soc2":63.1,"stale":0}`
 | `auto` | Auto-Modus aktiv (1 = ESP32 ist Master) |
 | `ladesperre_en` | LADESPERRE-Funktion aktiviert |
 | `ratio_th` | Schwelle ab der LADESPERRE greift (MQTT `sofar/ratio`, default 0.5) |
+| `bat1_f` | Anteil der Sofar-Ladung im Überschuss (MQTT `sofar/bat1_factor`, default 0.5) |
 | `ratio_ist` | Zuletzt berechnete Ist-Wetter-Ratio (`-1` = unbeurteilbar) |
 | `peak_h` | Stunde des Tages-DC-Peaks |
 | `win_end_h` | Ende des Peak-Fensters |
@@ -314,9 +322,9 @@ MQTT `soyo/calc`: `{"W":468,"soc2":63.1,"stale":0}`
   "state":        1,
   "state_before": 0,
   "stable":       0,
-  "excess":       5910,
+  "excess":       4660,
   "drop_rate":    147.0,
-  "trace":        "POWER_MATCHING (Excess: 5910W, Budget: 7410W) | RAMP_LIMITED (5->1)",
+  "trace":        "POWER_MATCHING (Excess: 4660W, Budget: 5560W) | RAMP_LIMITED (2->1)",
   "deep_discharge_active": false,
   "need_downward_regulation": false,
   "ladesperre":   false,
@@ -406,6 +414,18 @@ Nicht-retained → bei Reboot zurück auf 0.5.
 mosquitto_pub -h 192.168.178.218 -t sofar/ratio -m '{"RATIO":0.6}'
 # Nackte Zahl ebenfalls gültig
 mosquitto_pub -h 192.168.178.218 -t sofar/ratio -m '0.6'
+```
+
+#### bat1-Faktor (Anteil der Sofar-Ladung im Überschuss) setzen
+
+Anteil der Sofar-**Ladung** (bat1>0), der als EBox-Überschuss zählt (Bereich 0–1, default 0.5).
+Entladung (bat1<0) zählt immer voll. Nicht-retained → bei Reboot zurück auf 0.5.
+
+```bash
+# JSON-Form
+mosquitto_pub -h 192.168.178.218 -t sofar/bat1_factor -m '{"FACTOR":0.3}'
+# Nackte Zahl ebenfalls gültig
+mosquitto_pub -h 192.168.178.218 -t sofar/bat1_factor -m '0.3'
 ```
 
 #### Soyo-Sollwert manuell setzen
