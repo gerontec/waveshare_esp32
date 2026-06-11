@@ -1,0 +1,571 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  Sofar fox2db v2.9 auf Waveshare ESP32-S3 6CH Relay
+#  Aufbau auf gerontec/waveshare (erprobte Basis) + fox2db-Steuerlogik (Header).
+#
+#  Relais-Mapping:
+#    CH1 (GPIO1)  = EBox-State Bit0 ┐
+#    CH2 (GPIO2)  = EBox-State Bit1 ├─ State 0..7 binär (Log: State7 -> [1,1,1])
+#    CH3 (GPIO41) = EBox-State Bit2 ┘
+#    CH4 (GPIO42) = DO4  -> WR2 abregeln (3s-Puls)
+#    CH5 (GPIO45) = frei
+#    CH6 (GPIO46) = frei
+#
+#  SAFETY (erster Test):
+#    - Alle Relais ALWAYS_OFF beim Boot (EBox aus, DO4 aus)
+#    - auto_enable = FALSE  -> keine Auto-Regelung bis per MQTT freigegeben
+#    - ladesperre_enable = FALSE -> Forecast/Ladesperre erst nach Core-Test
+#    - MQTT-Stale > 3min -> Zwangs-State 0
+#
+#  MQTT IN:   inverter/power_grid_exchange/json  (PCC, Bat1, SOC1)
+#             ebox/status   {"soc":..,"power":..} (SOC2, EBox-Leistung)  <-- Pi muss publizieren
+#  MQTT OUT:  sofar/state   (Entscheidung -> Pi schreibt in DB)
+#  CONTROL:   sofar/auto       {"ENABLE":1}
+#             sofar/ladesperre {"ENABLE":1}
+#             waveshare/relay/1..6, waveshare/relay/all  (Hand-Test)
+# ════════════════════════════════════════════════════════════════════════════
+
+substitutions:
+  device_name: sofar-waveshare
+  mqtt_broker: 192.168.178.218
+  wifi_ssid: your-ssid
+  wifi_password: "your-wifi-password"
+  ota_password: your-ota-password
+  fw_version: "3.3.30"     # Vereinfachung: MIN_EXCESS raus, SWEET_SPOT_BAT raus, EMERGENCY=G+120
+
+esphome:
+  name: ${device_name}
+  friendly_name: Sofar fox2db Relay
+  includes:
+    - fox2db_logic.h
+    - open_wifi_scan.h
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: pub_status
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: arduino
+
+network:
+  enable_ipv6: true
+
+logger:
+  baud_rate: 0   # UART aus; Log läuft über MQTT-Topic sofar-waveshare/debug
+
+ota:
+  - platform: esphome
+    password: ${ota_password}
+
+wifi:
+  id: wifi_comp
+  ssid: ${wifi_ssid}
+  password: ${wifi_password}
+  reboot_timeout: 5min
+  ap:
+    ssid: Sofar-Waveshare-AP
+    password: ${ota_password}
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "CET-1CEST,M3.5.0,M10.5.0/3"
+
+# RS485 bidirektional: GPIO17=TX→SP3485 DI, GPIO18=RX←SP3485 RO
+# Richtungssteuerung: TX-Pin → 74HC04D Inverter → TXDEN → SP3485 DE+RE (automatisch)
+uart:
+  id: rs485
+  tx_pin: GPIO17
+  rx_pin: GPIO18
+  baud_rate: 4800
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+  rx_buffer_size: 256
+
+globals:
+  # Eingänge (aus MQTT)
+  - { id: in_pcc,   type: float, restore_value: false, initial_value: '0' }
+  - { id: in_bat1,  type: float, restore_value: false, initial_value: '0' }
+  - { id: in_soc1,  type: float, restore_value: false, initial_value: '0' }
+  - { id: in_soc2,  type: float, restore_value: false, initial_value: '-1' }   # -1 = unbekannt -> HOLD
+  - { id: in_ebox,  type: float, restore_value: false, initial_value: '0' }
+  - { id: last_inv_ms, type: int, restore_value: false, initial_value: '0' }
+  - { id: in_z2,      type: float, restore_value: false, initial_value: '0' }   # Z2 Zähler wirkleist (W)
+  - { id: in_pcc_null, type: bool, restore_value: false, initial_value: 'false' } # PCC war null (Lesefehler)
+  # Schalter (per MQTT)
+  - { id: auto_enable,       type: bool, restore_value: false, initial_value: 'true' }
+  - { id: ladesperre_enable, type: bool, restore_value: false, initial_value: 'true' }
+  - { id: ladesperre_ratio,  type: float, restore_value: false, initial_value: '0.5' } # Schlechtwetter-Freigabe-Schwelle (MQTT: sofar/ratio)
+  - { id: do4_req,           type: bool, restore_value: false, initial_value: 'false' }
+  - { id: g_peak_h,    type: int, restore_value: false, initial_value: '-1' }
+  - { id: g_win_end_h, type: int, restore_value: false, initial_value: '-1' }
+  - { id: g_ratio_ist, type: float, restore_value: false, initial_value: '-1' } # zuletzt berechnete Ist-Wetter-Ratio
+  # Soyo-Sollwert (W) intern berechnet, wird alle ${soyo_resend} per RS485 gesendet
+  - { id: soyo_w,  type: int, restore_value: false, initial_value: '468' }
+  - { id: soyo_ms, type: int, restore_value: false, initial_value: '0' }
+  # fox2db/state (relay state + soc_bat2 für soyo-Kalkulation)
+  - { id: fox_relay_state, type: int,  restore_value: false, initial_value: '0' }
+  - { id: fox_state_ms,    type: int,  restore_value: false, initial_value: '0' }
+  # GPIO-Scan (nicht-blockierend): Flankenzähler für alle Pins
+  - { id: scan_active,   type: bool, restore_value: false, initial_value: 'false' }
+  - { id: scan_start_ms, type: int,  restore_value: false, initial_value: '0' }
+  - { id: scan_last_lo,  type: int,  restore_value: false, initial_value: '0' }
+  - { id: scan_last_hi,  type: int,  restore_value: false, initial_value: '0' }
+  - { id: scan_e17,      type: int,  restore_value: false, initial_value: '0' }
+  - { id: scan_e18,      type: int,  restore_value: false, initial_value: '0' }
+  - { id: scan_e3,       type: int,  restore_value: false, initial_value: '0' }
+  - { id: scan_eall_lo,  type: int,  restore_value: false, initial_value: '0' }
+  - { id: scan_eall_hi,  type: int,  restore_value: false, initial_value: '0' }
+  # Geräte-IP (wird von pub_status aktuell gehalten, in jedes JSON gemeldet)
+  - { id: dev_ip,  type: std::string, restore_value: false, initial_value: '"0.0.0.0"' }
+  - { id: dev_ip6, type: std::string, restore_value: false, initial_value: '""' }
+
+output:
+  - platform: gpio
+    id: buzzer_out
+    pin: GPIO21
+
+switch:
+  - { platform: gpio, id: relay_ch1, name: CH1, pin: GPIO1,  restore_mode: ALWAYS_OFF }
+  - { platform: gpio, id: relay_ch2, name: CH2, pin: GPIO2,  restore_mode: ALWAYS_OFF }
+  - { platform: gpio, id: relay_ch3, name: CH3, pin: GPIO41, restore_mode: ALWAYS_OFF }
+  - { platform: gpio, id: relay_ch4, name: CH4_DO4, pin: GPIO42, restore_mode: ALWAYS_OFF }
+  - { platform: gpio, id: relay_ch5, name: CH5, pin: GPIO45, restore_mode: ALWAYS_OFF }
+  - { platform: gpio, id: relay_ch6, name: CH6, pin: GPIO46, restore_mode: ALWAYS_OFF }
+
+script:
+  - id: beep
+    mode: single
+    then:
+      - output.turn_on: buzzer_out
+      - delay: 50ms
+      - output.turn_off: buzzer_out
+
+  # DO4-Puls: CH4 3s an -> WR2 abregeln, mit akustischem Alarm
+  - id: do4_script
+    mode: restart
+    then:
+      - switch.turn_on: relay_ch4
+      - script.execute: beep
+      - delay: 3s
+      - switch.turn_off: relay_ch4
+
+  # GPIO18-Physik-Test: UART deaktivieren, GPIO18 als plain input, CH1=A→GND
+  - id: relay_test_script
+    mode: single
+    then:
+      - lambda: |-
+          #include "driver/uart.h"
+          #include "driver/gpio.h"
+          #include "soc/gpio_reg.h"
+          // UART1 driver deinstallieren → GPIO18 frei
+          uart_driver_delete(UART_NUM_1);
+          // GPIO18 als plain input mit Pullup
+          gpio_reset_pin(GPIO_NUM_18);
+          gpio_set_direction(GPIO_NUM_18, GPIO_MODE_INPUT);
+          gpio_pullup_en(GPIO_NUM_18);
+          int v0 = gpio_get_level(GPIO_NUM_18);
+          char msg[128];
+          snprintf(msg, sizeof(msg), "GPIO18 freed: level=%d (expect 1=idle)", v0);
+          id(mqtt_client).publish("rs485/relay_test_result", msg);
+      - delay: 300ms
+      - switch.turn_on: relay_ch1
+      - delay: 300ms
+      - lambda: |-
+          // CH1 geschlossen: A=GND → MAX485 RO=LOW → GPIO18 soll LOW sein
+          int v1 = gpio_get_level(GPIO_NUM_18);
+          uint32_t reg = (REG_READ(0x3FF44004) >> 18) & 1;  // GPIO_IN_REG bit18
+          char msg[128];
+          snprintf(msg, sizeof(msg),
+            "{\"ch1\":1,\"gpio18_level\":%d,\"gpio18_reg\":%lu,\"verdict\":\"%s\"}",
+            v1, reg, v1 == 0 ? "PATH OK: RO->GPIO18 works!" : "PATH BROKEN: GPIO18 stuck HIGH");
+          id(mqtt_client).publish("rs485/relay_test_result", msg);
+      - delay: 300ms
+      - switch.turn_off: relay_ch1
+      - delay: 200ms
+      - lambda: |-
+          int v2 = gpio_get_level(GPIO_NUM_18);
+          char msg[64];
+          snprintf(msg, sizeof(msg), "{\"ch1\":0,\"gpio18_level\":%d}", v2);
+          id(mqtt_client).publish("rs485/relay_test_result", msg);
+
+  # Schlanke Board-Telemetrie
+  - id: pub_status
+    mode: restart
+    then:
+      - lambda: |-
+          // IP/IPv6 ermitteln und in Globals halten
+          char ip4[16] = "0.0.0.0"; char ip6[41] = "";
+          bool got4 = false, got6 = false;
+          for (auto &a : id(wifi_comp).get_ip_addresses()) {
+            if (!a.is_set()) continue;
+            std::string s = a.str();
+            if (s.find(':') == std::string::npos && !got4) { strncpy(ip4, s.c_str(), 15); got4 = true; }
+            else if (s.find(':') != std::string::npos && !got6) { strncpy(ip6, s.c_str(), 40); got6 = true; }
+          }
+          id(dev_ip) = ip4; id(dev_ip6) = ip6;
+          char json[420];
+          int phys_state = (id(relay_ch1).state ? 1 : 0)
+                         | (id(relay_ch2).state ? 2 : 0)
+                         | (id(relay_ch3).state ? 4 : 0);
+          snprintf(json, sizeof(json),
+            "{\"ip\":\"%s\",\"ip6\":\"%s\",\"state\":%d,\"target_state\":%d,\"auto\":%d,\"ladesperre_en\":%d,"
+            "\"ratio_th\":%.2f,\"ratio_ist\":%.2f,\"peak_h\":%d,\"win_end_h\":%d,"
+            "\"soyo_w\":%d,\"uptime\":%lu,\"mem_free\":%lu,\"fw\":\"%s\",\"fw_date\":\"" __DATE__ "T" __TIME__ "\"}",
+            ip4, ip6, phys_state, id(fox_relay_state), id(auto_enable) ? 1 : 0,
+            id(ladesperre_enable) ? 1 : 0, id(ladesperre_ratio), id(g_ratio_ist), id(g_peak_h), id(g_win_end_h), id(soyo_w),
+            (unsigned long)(millis() / 1000), (unsigned long)ESP.getFreeHeap(),
+            "${fw_version}");
+          id(mqtt_client).publish("sofar/waveshare/status", json);
+
+mqtt:
+  id: mqtt_client
+  broker: ${mqtt_broker}
+  port: 1883
+  client_id: sofar_waveshare
+  keepalive: 60s
+  reboot_timeout: 15min
+  discovery: false
+  on_connect:
+    then:
+      - script.execute: pub_status
+  on_message:
+    # ── GPIO-Scan: Aktiviert nicht-blockierend, Ergebnis nach 3s ────────────
+    - topic: rs485/scan
+      then:
+        - lambda: |-
+            #include "soc/gpio_reg.h"
+            gpio_input_enable(GPIO_NUM_17);
+            gpio_input_enable(GPIO_NUM_18);
+            gpio_input_enable(GPIO_NUM_3);
+            id(scan_e17) = 0; id(scan_e18) = 0; id(scan_e3) = 0;
+            id(scan_eall_lo) = 0; id(scan_eall_hi) = 0;
+            uint32_t init_lo = REG_READ(GPIO_IN_REG);
+            id(scan_last_lo)  = (int)init_lo;
+            id(scan_last_hi)  = (int)REG_READ(GPIO_IN1_REG);
+            id(scan_start_ms) = (int)millis();
+            id(scan_active)   = true;
+            // Ruhepegel sofort melden: GPIO3=HIGH → DE/RE=TX → Receiver disabled!
+            char init[128];
+            snprintf(init, sizeof(init),
+              "init: GPIO3=%d GPIO17=%d GPIO18=%d (3=HIGH→ReceiverOFF!)",
+              (int)((init_lo >> 3) & 1), (int)((init_lo >> 17) & 1), (int)((init_lo >> 18) & 1));
+            id(mqtt_client).publish("rs485/scan_result", init);
+
+    # ── Relay-Test: CH1 schaltet A→GND während Scan ──────────────────────
+    - topic: rs485/relay_test
+      then:
+        - script.execute: relay_test_script
+
+    # ── Wechselrichter: PCC / Bat1 / SOC1 ──────────────────────────────────
+    - topic: inverter/power_grid_exchange/json
+      then:
+        - lambda: |-
+            auto num = [](const char* s, const char* k, float d) -> float {
+              const char* p = strstr(s, k); if (!p) return d;
+              p = strchr(p, ':'); if (!p) return d; return atof(p + 1);
+            };
+            const char* raw = x.c_str();
+            id(in_pcc_null) = strstr(raw, "\"ActivePower_PCC_Total\":null") != nullptr
+                           || strstr(raw, "\"ActivePower_PCC_Total\": null") != nullptr;
+            id(in_pcc)  = num(raw, "ActivePower_PCC_Total", 0) * 1000.0f;
+            id(in_bat1) = num(raw, "Power_Bat1", 0) * 1000.0f;
+            id(in_soc1) = num(raw, "SOC_Bat1", 0);
+            id(last_inv_ms) = (int) millis();
+
+    # ── Z2-Zähler: Wirkleistung als PCC-Fallback bei NaN ─────────────────
+    - topic: pv_zaehl2
+      then:
+        - lambda: |-
+            auto num = [](const char* s, const char* k, float d) -> float {
+              const char* p = strstr(s, k); if (!p) return d;
+              p = strchr(p, ':'); if (!p) return d; return atof(p + 1);
+            };
+            id(in_z2) = num(x.c_str(), "wirkleist", 0);
+
+    # ── EBox: SOC2 + Leistung (ebox_mqtt.py → ebox/pwr retained) ─────────
+    - topic: ebox/pwr
+      then:
+        - lambda: |-
+            auto num = [](const char* s, const char* k, float d) -> float {
+              const char* p = strstr(s, k); if (!p) return d;
+              p = strchr(p, ':'); if (!p) return d; return atof(p + 1);
+            };
+            id(in_soc2) = num(x.c_str(), "soc", -1);
+            id(in_ebox) = num(x.c_str(), "power_w", 0);
+
+    # ── fox2db/state: relay state + soc_bat2 für soyo-Kalkulation ────────
+    - topic: fox2db/state
+      then:
+        - lambda: |-
+            auto num = [](const char* s, const char* k, float d) -> float {
+              const char* p = strstr(s, k); if (!p) return d;
+              p = strchr(p, ':'); if (!p) return d; return atof(p + 1);
+            };
+            id(fox_relay_state) = (int) num(x.c_str(), "\"state\"", 0);
+            id(in_soc2)         = num(x.c_str(), "soc_bat2", id(in_soc2));
+            id(fox_state_ms)    = (int) millis();
+
+    # ── Auto-Regelung scharf/aus ───────────────────────────────────────────
+    - topic: sofar/auto
+      then:
+        - lambda: |-
+            const char* p = strstr(x.c_str(), "ENABLE"); if (!p) p = strchr(x.c_str(), ':');
+            if (!p) return; p = strchr(p, ':'); if (!p) return;
+            id(auto_enable) = atoi(p + 1) != 0;
+
+    - topic: sofar/ladesperre
+      then:
+        - lambda: |-
+            const char* p = strstr(x.c_str(), "ENABLE"); if (!p) p = strchr(x.c_str(), ':');
+            if (!p) return; p = strchr(p, ':'); if (!p) return;
+            id(ladesperre_enable) = atoi(p + 1) != 0;
+
+    # ── LADESPERRE-Ratio-Schwelle (Schlechtwetter-Freigabe), default 0.5 ─────
+    - topic: sofar/ratio
+      then:
+        - lambda: |-
+            const char* p = strstr(x.c_str(), "RATIO"); if (!p) p = strchr(x.c_str(), ':');
+            if (!p) p = x.c_str(); else { p = strchr(p, ':'); if (!p) return; p++; }
+            float v = atof(p);
+            if (v > 0.0f && v <= 1.0f) id(ladesperre_ratio) = v;
+
+    # ── Soyo-Sollwert (W) ──────────────────────────────────────────────────
+    #   akzeptiert {"W":350} oder nackte Zahl "350"
+    - topic: soyo/set
+      then:
+        - lambda: |-
+            const char* s = x.c_str();
+            const char* p = strstr(s, "W");
+            if (p) p = strchr(p, ':');
+            int w = atoi(p ? p + 1 : s);
+            if (w < 0) w = 0; if (w > 900) w = 900;
+            id(soyo_w) = w; id(soyo_ms) = (int) millis();
+
+    # ── Hand-Test Einzelrelais ─────────────────────────────────────────────
+    - topic: waveshare/relay/1
+      then: { lambda: 'const char* p=strchr(x.c_str(),'':''); if(p){ atoi(p+1)?id(relay_ch1).turn_on():id(relay_ch1).turn_off(); }' }
+    - topic: waveshare/relay/2
+      then: { lambda: 'const char* p=strchr(x.c_str(),'':''); if(p){ atoi(p+1)?id(relay_ch2).turn_on():id(relay_ch2).turn_off(); }' }
+    - topic: waveshare/relay/3
+      then: { lambda: 'const char* p=strchr(x.c_str(),'':''); if(p){ atoi(p+1)?id(relay_ch3).turn_on():id(relay_ch3).turn_off(); }' }
+    - topic: waveshare/relay/4
+      then: { lambda: 'const char* p=strchr(x.c_str(),'':''); if(p){ atoi(p+1)?id(relay_ch4).turn_on():id(relay_ch4).turn_off(); }' }
+    - topic: waveshare/relay/5
+      then: { lambda: 'const char* p=strchr(x.c_str(),'':''); if(p){ atoi(p+1)?id(relay_ch5).turn_on():id(relay_ch5).turn_off(); }' }
+    - topic: waveshare/relay/6
+      then: { lambda: 'const char* p=strchr(x.c_str(),'':''); if(p){ atoi(p+1)?id(relay_ch6).turn_on():id(relay_ch6).turn_off(); }' }
+    - topic: waveshare/relay/all
+      then:
+        - lambda: |-
+            const char* p = strchr(x.c_str(), ':'); if (!p) return;
+            bool on = atoi(p + 1) != 0;
+            (on ? id(relay_ch1).turn_on() : id(relay_ch1).turn_off());
+            (on ? id(relay_ch2).turn_on() : id(relay_ch2).turn_off());
+            (on ? id(relay_ch3).turn_on() : id(relay_ch3).turn_off());
+            (on ? id(relay_ch4).turn_on() : id(relay_ch4).turn_off());
+            (on ? id(relay_ch5).turn_on() : id(relay_ch5).turn_off());
+            (on ? id(relay_ch6).turn_on() : id(relay_ch6).turn_off());
+
+interval:
+  # ── Entscheidungs-Zyklus (wie Cron, 60s) ─────────────────────────────────
+  - interval: 60s
+    then:
+      - lambda: |-
+          id(do4_req) = false;
+          auto t = id(sntp_time).now();
+          if (!t.is_valid()) return;
+
+          // Frische-Check: keine WR-Daten > 3min -> Sicher auf State 0
+          if ((uint32_t) millis() - (uint32_t) id(last_inv_ms) > 180000UL) {
+            id(relay_ch1).turn_off(); id(relay_ch2).turn_off(); id(relay_ch3).turn_off();
+            fox::g_state.relay_st = 0;
+            char sj[120];
+            snprintf(sj, sizeof(sj),
+              "{\"ip\":\"%s\",\"state\":0,\"trace\":\"MQTT_STALE_SAFE\",\"auto\":0}",
+              id(dev_ip).c_str());
+            id(mqtt_client).publish("sofar/state", sj);
+            return;
+          }
+
+          fox::Inputs in;
+          // PCC: Inverter-Wert, Z2 nur als Fallback bei null-Lesefehler
+          float pcc_raw = id(in_pcc);
+          if (id(in_pcc_null) && id(in_z2) != 0.0f)
+            pcc_raw = -id(in_z2);
+          in.pcc = pcc_raw; in.bat1 = id(in_bat1); in.soc1 = id(in_soc1);
+          in.soc2 = id(in_soc2); in.ebox_w = id(in_ebox);
+
+          int local_sec = t.hour * 3600 + t.minute * 60 + t.second;
+          fox::Result r = fox::step(in, fox::g_state, (time_t) t.timestamp, local_sec,
+                                    t.month, t.hour, t.day_of_year, id(ladesperre_enable),
+                                    id(ladesperre_ratio));
+
+          bool auto_on = id(auto_enable);
+          if (auto_on) {
+            int s = fox::g_state.relay_st;
+            (s & 1)        ? id(relay_ch1).turn_on() : id(relay_ch1).turn_off();
+            ((s >> 1) & 1) ? id(relay_ch2).turn_on() : id(relay_ch2).turn_off();
+            ((s >> 2) & 1) ? id(relay_ch3).turn_on() : id(relay_ch3).turn_off();
+            id(do4_req) = r.do4_pulse;
+          }
+
+          id(g_peak_h)    = r.peak_h;
+          id(g_win_end_h) = r.win_end_h;
+          id(g_ratio_ist) = r.ratio;
+
+          // Aktueller externer Relay-State (aus letztem MQTT-Befehl)
+          int ext_st = (id(relay_ch1).state ? 1 : 0)
+                     | (id(relay_ch2).state ? 2 : 0)
+                     | (id(relay_ch3).state ? 4 : 0);
+          int conflict = (!auto_on && r.final_state != ext_st) ? 1 : 0;
+
+          char js[480];
+          snprintf(js, sizeof(js),
+            "{\"ip\":\"%s\",\"state\":%d,\"changed\":%d,\"pcc\":%.0f,\"bat1\":%.0f,"
+            "\"soc2\":%.1f,\"soc1\":%.1f,\"ebox\":%.0f,\"excess\":%.0f,"
+            "\"dc_expected\":%.0f,\"dc_delta\":%.0f,\"ratio_ist\":%.2f,\"ratio_th\":%.2f,"
+            "\"ladesperre\":%d,\"do4\":%d,"
+            "\"peak_h\":%d,\"win_end_h\":%d,\"auto\":%d,\"ext_st\":%d,\"conflict\":%d,"
+            "\"trace\":\"%s\"}",
+            id(dev_ip).c_str(), r.final_state, r.changed ? 1 : 0, in.pcc, in.bat1,
+            in.soc2, in.soc1, in.ebox_w, r.excess, r.dc_expected, r.dc_delta,
+            r.ratio, id(ladesperre_ratio),
+            r.ladesperre ? 1 : 0, r.do4_pulse ? 1 : 0,
+            r.peak_h, r.win_end_h, auto_on ? 1 : 0, ext_st, conflict, r.trace);
+          id(mqtt_client).publish("sofar/state", js);
+      - if:
+          condition:
+            lambda: 'return id(do4_req);'
+          then:
+            - script.execute: do4_script
+
+  # ── Soyo-Kalkulation (60s = Daten-Update-Zyklus pivot2db.py) ────────────
+  - interval: 60s
+    then:
+      - lambda: |-
+          int w = 0;
+          auto t = id(sntp_time).now();
+          // Stale: Inverter-Daten älter als 3min → 0W
+          bool stale = (uint32_t)millis() - (uint32_t)id(last_inv_ms) > 180000UL
+                       || id(last_inv_ms) == 0;
+          if (!stale) {
+            int   st   = fox::g_state.relay_st;   // lokal, kein Pi nötig
+            float soc2 = id(in_soc2);
+            float pcc  = id(in_pcc);
+            if (st != 0) {
+              w = 0;  // EBox aktiv → soyo nie
+            } else if (soc2 >= 0 && soc2 < 9.0f) {
+              w = 0;  // Entladeschutz
+            } else if (id(in_ebox) > 200.0f) {
+              w = 0;  // bat2 lädt → soyo aus
+            } else if (pcc > 200.0f) {
+              w = 0;  // PV-Überschuss → bat2 schonen
+            } else if (pcc < -100.0f) {
+              int h = t.is_valid() ? t.hour : 12;
+              bool is_night = (h < 6 || h >= 20);
+              w = (int)(-pcc * 1.01f) + (is_night ? 468 : 0);  // wie soyo1min.c: error*kp + night_standard
+              if (w > 900) w = 900;
+            } else {
+              // Ausgeglichen / Nacht
+              int h = t.is_valid() ? t.hour : 12;
+              w = (h < 6 || h >= 20) ? 468 : 10;
+            }
+          }
+          id(soyo_w)  = w;
+          id(soyo_ms) = (int) millis();
+          char js[80];
+          snprintf(js, sizeof(js), "{\"W\":%d,\"soc2\":%.1f,\"stale\":%d}",
+                   w, id(in_soc2), stale ? 1 : 0);
+          id(mqtt_client).publish("soyo/calc", js);
+
+  # ── GPIO-Scan Sampler (1ms, nicht-blockierend) ───────────────────────────
+  - interval: 1ms
+    then:
+      - lambda: |-
+          if (!id(scan_active)) return;
+          #include "soc/gpio_reg.h"
+          uint32_t lo = REG_READ(GPIO_IN_REG);
+          uint32_t hi = REG_READ(GPIO_IN1_REG);
+          uint32_t dlo = lo ^ (uint32_t)id(scan_last_lo);
+          uint32_t dhi = hi ^ (uint32_t)id(scan_last_hi);
+          if (dlo & (1u<<17)) id(scan_e17) = id(scan_e17) + 1;
+          if (dlo & (1u<<18)) id(scan_e18) = id(scan_e18) + 1;
+          if (dlo & (1u<< 3)) id(scan_e3)  = id(scan_e3)  + 1;
+          if (dlo) id(scan_eall_lo) = id(scan_eall_lo) + __builtin_popcount(dlo);
+          if (dhi) id(scan_eall_hi) = id(scan_eall_hi) + __builtin_popcount(dhi);
+          id(scan_last_lo) = (int)lo;
+          id(scan_last_hi) = (int)hi;
+          if ((uint32_t)millis() - (uint32_t)id(scan_start_ms) >= 3000) {
+            id(scan_active) = false;
+            char out[256];
+            snprintf(out, sizeof(out),
+              "{\"GPIO17\":%d,\"GPIO18\":%d,\"GPIO3\":%d,\"all_lo\":%d,\"all_hi\":%d}",
+              id(scan_e17), id(scan_e18), id(scan_e3), id(scan_eall_lo), id(scan_eall_hi));
+            id(mqtt_client).publish("rs485/scan_result", out);
+          }
+
+  # ── RS485 TX+RX: Soyo-Send alle 3s (safe: geprüft alle 50ms) + Frame-Empfang
+  - interval: 50ms
+    then:
+      - lambda: |-
+          static uint32_t send_count = 0;
+          static uint32_t change_count = 0;
+          static char prev_hex[20] = "";
+          static uint32_t last_soyo_tx = 0;
+          static uint8_t buf[64];
+          static int buf_len = 0;
+          static uint32_t last_rx_ms = 0;
+          uint32_t now = millis();
+
+          // Soyo TX: alle 3s — geprüft alle 50ms → max. 50ms Verzögerung (Soyo-Timeout=4s)
+          if (now - last_soyo_tx >= 3000UL) {
+            last_soyo_tx = now;
+            int w = id(soyo_w);
+            if (now - (uint32_t)id(soyo_ms) > 90000UL) w = 0;
+            uint8_t ph = (w >> 8) & 0xFF, pl = w & 0xFF;
+            uint8_t crc = (264 - ph - pl) & 0xFF;
+            uint8_t f[8] = {0x24, 0x56, 0x00, 0x21, ph, pl, 0x80, crc};
+            id(rs485).write_array(f, 8);
+            id(rs485).flush();
+            char hex[20];
+            snprintf(hex, sizeof(hex), "%02X%02X%02X%02X%02X%02X%02X%02X",
+                     f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+            send_count++;
+            bool changed = (strcmp(hex, prev_hex) != 0);
+            if (changed) { change_count++; strncpy(prev_hex, hex, sizeof(prev_hex)); }
+            if (changed) {
+              char js[160];
+              snprintf(js, sizeof(js),
+                "{\"w\":%d,\"hex\":\"%s\",\"sends\":%lu,\"changes\":%lu}",
+                w, hex, send_count, change_count);
+              id(mqtt_client).publish("soyo/sent", js);
+            }
+          }
+
+          // RX: Frame-Empfang (25ms Gap-Erkennung)
+
+          while (id(rs485).available() && buf_len < (int)sizeof(buf)) {
+            uint8_t b;
+            id(rs485).read_byte(&b);
+            buf[buf_len++] = b;
+            last_rx_ms = now;
+          }
+          if (buf_len > 0 && (now - last_rx_ms) >= 25) {
+            char hex[buf_len * 2 + 1];
+            for (int i = 0; i < buf_len; i++)
+              sprintf(hex + i * 2, "%02X", buf[i]);
+            hex[buf_len * 2] = 0;
+            char js[160];
+            snprintf(js, sizeof(js), "{\"len\":%d,\"hex\":\"%s\"}", buf_len, hex);
+            id(mqtt_client).publish("rs485/rx", js);
+            buf_len = 0;
+          }
+
+  # ── Board-Telemetrie ─────────────────────────────────────────────────────
+  - interval: 30s
+    then:
+      - script.execute: pub_status
