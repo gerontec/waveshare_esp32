@@ -30,7 +30,7 @@ substitutions:
   wifi_ssid: your-ssid
   wifi_password: "your-wifi-password"
   ota_password: your-ota-password
-  fw_version: "3.3.33"     # bat1_charge_factor (MQTT sofar/bat1_factor, default 0.5): Anteil Sofar-Ladung im Überschuss
+  fw_version: "3.3.34"     # Soyo-Nachtfenster (468W) dynamisch aus Klarhimmel-Sonnenstand (elev≤0°) statt starr 06:00/20:00
 
 esphome:
   name: ${device_name}
@@ -466,6 +466,13 @@ interval:
             int   st   = fox::g_state.relay_st;   // lokal, kein Pi nötig
             float soc2 = id(in_soc2);
             float pcc  = id(in_pcc);
+            // Nacht dynamisch aus Klarhimmelmodell: Sonnenstand ≤ 0° (unter Horizont)
+            // statt starr 06:00/20:00 — folgt so dem saisonalen Sonnenauf-/untergang.
+            bool is_night = false;
+            if (t.is_valid()) {
+              double elev, az; fox::sun_pos((time_t) t.timestamp, elev, az);
+              is_night = (elev <= 0.0);
+            }
             if (st != 0) {
               w = 0;  // EBox aktiv → soyo nie
             } else if (soc2 >= 0 && soc2 < 9.0f) {
@@ -475,14 +482,11 @@ interval:
             } else if (pcc > 200.0f) {
               w = 0;  // PV-Überschuss → bat2 schonen
             } else if (pcc < -100.0f) {
-              int h = t.is_valid() ? t.hour : 12;
-              bool is_night = (h < 6 || h >= 20);
               w = (int)(-pcc * 1.01f) + (is_night ? 468 : 0);  // wie soyo1min.c: error*kp + night_standard
               if (w > 900) w = 900;
             } else {
               // Ausgeglichen / Nacht
-              int h = t.is_valid() ? t.hour : 12;
-              w = (h < 6 || h >= 20) ? 468 : 10;
+              w = is_night ? 468 : 10;
             }
           }
           id(soyo_w)  = w;
