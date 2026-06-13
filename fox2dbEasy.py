@@ -400,7 +400,7 @@ def apply_blocking(best: int, relay_st: int, pcc: float, bat1: float,
         return relay_st, False, trace + " | TREND_BLOCK"
     if up and bat1 < BAT_DISCHARGE_TH:
         return relay_st, False, trace + " | BAT_GUARD_BLOCK"
-    if not up and stable < STABILIZATION:
+    if stable < STABILIZATION:
         return relay_st, False, trace + " | STABILIZING"
     if not up and pwr_diff < HYSTERESIS:
         return relay_st, False, trace + " | HYSTERESIS"

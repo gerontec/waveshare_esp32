@@ -191,7 +191,7 @@ inline int apply_blocking(int best, int relay_st, float pcc, float bat1, int sta
   if (up && fabsf(pcc) < SWEET_SPOT_PCC)                        { tcat(trace, " | SWEET_SPOT_HOLD"); *changed = false; return relay_st; }
   if (up && drop_rate < MAX_DROP_RATE && drop_rate != 0)         { tcat(trace, " | TREND_BLOCK");     *changed = false; return relay_st; }
   if (up && bat1 < BAT_DISCHARGE_TH)                            { tcat(trace, " | BAT_GUARD_BLOCK"); *changed = false; return relay_st; }
-  if (!up && stable < STABILIZATION)                           { tcat(trace, " | STABILIZING");     *changed = false; return relay_st; }
+  if (stable < STABILIZATION)                                  { tcat(trace, " | STABILIZING");     *changed = false; return relay_st; }
   if (!up && pwr_diff < HYSTERESIS)                            { tcat(trace, " | HYSTERESIS");      *changed = false; return relay_st; }
   *changed = true; return best;
 }
