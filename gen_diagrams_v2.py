@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ════════════════════════════════════════════════════════════════════════════
-#  Diagramm-Generator — NUR Waveshare-Version (fox2db v3.3.33, ESP32-S3 6CH)
+#  Diagramm-Generator — NUR Waveshare-Version (fox2db v3.3.34, ESP32-S3 6CH)
 #  Quelle: waveshare/fox2db_logic.h + waveshare/waveshare_6ch_esp32s3.md
 #  Mehrseitiges PDF, Mindest-Schriftgröße 10.
 # ════════════════════════════════════════════════════════════════════════════
@@ -13,7 +13,7 @@ OUT = Path(__file__).parent
 PAGE1 = """
 digraph WaveshareArch {
     graph [
-        label="fox2db v3.3.33 — Waveshare ESP32-S3 6CH — Architektur (fox2db_logic.h, autonom auf dem ESP)"
+        label="fox2db v3.3.34 — Waveshare ESP32-S3 6CH — Architektur (fox2db_logic.h, autonom auf dem ESP)"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=ortho nodesep=0.6 ranksep=0.8
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -102,7 +102,7 @@ digraph WaveshareArch {
 PAGE2 = """
 digraph WaveshareStep {
     graph [
-        label="fox2db v3.3.33 — step() Gesamtablauf (alle 60s, fox2db_logic.h)"
+        label="fox2db v3.3.34 — step() Gesamtablauf (alle 60s, fox2db_logic.h)"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=polyline nodesep=0.4 ranksep=0.5
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -167,7 +167,7 @@ digraph WaveshareStep {
 PAGE3 = """
 digraph WaveshareDecision {
     graph [
-        label="fox2db v3.3.33 — decide() / apply_guards() / apply_blocking() im Detail"
+        label="fox2db v3.3.34 — decide() / apply_guards() / apply_blocking() im Detail"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=polyline nodesep=0.4 ranksep=0.5
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -266,7 +266,7 @@ digraph WaveshareDecision {
 PAGE4 = """
 digraph WaveshareSoyo {
     graph [
-        label="fox2db v3.3.33 — LADESPERRE-Logik + Soyo-Entladung (RS485)"
+        label="fox2db v3.3.34 — LADESPERRE-Logik + Soyo-Entladung (RS485)"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=polyline nodesep=0.4 ranksep=0.5
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -313,6 +313,7 @@ digraph WaveshareSoyo {
         Sw0 [shape=box fillcolor="#dddddd" label="w = 0"]
         Swc [shape=box fillcolor="#b8dfc4" label="w = |pcc| * 1.01\\n(+ Nacht: +468W)"]
         Sws [shape=box fillcolor="#b8dfc4" label="w = 468W (Nacht)\\noder 10W (Tag, Standby)"]
+        SNight [shape=note fillcolor="#fff9c4" label="Nacht = Sonne unter Horizont\\nfox::sun_pos() NOAA-Klarhimmel, elev <= 0°\\nv3.3.34: dynamisch statt starr 06:00/20:00"]
         Stx [shape=box fillcolor="#a8d0f5" label="RS485-Frame\\n[24 56 00 21 PH PL 80 CRC]\\nCRC=(264-PH-PL)&0xFF\\nimmer alle 3s (Keepalive 4s)"]
 
         S0 -> Sd1
@@ -329,6 +330,7 @@ digraph WaveshareSoyo {
         Sw0 -> Stx
         Swc -> Stx
         Sws -> Stx
+        Sws -> SNight [style=dashed color="#888888" arrowhead=none]
     }
 }
 """
