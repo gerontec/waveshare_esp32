@@ -1,7 +1,7 @@
 
 digraph WaveshareArch {
     graph [
-        label="fox2db v3.3.34 — Waveshare ESP32-S3 6CH — Architektur (fox2db_logic.h, autonom auf dem ESP)"
+        label="fox2db v3.3.34 — Waveshare ESP32-S3 6CH — Architecture (fox2db_logic.h, autonomous on the ESP)"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=ortho nodesep=0.6 ranksep=0.8
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -10,51 +10,51 @@ digraph WaveshareArch {
     edge [fontname="Helvetica" fontsize=10 penwidth=1.2]
 
     subgraph cluster_extern {
-        label="Externe Systeme (MQTT 192.168.178.218:1883)" style="dashed,filled" fillcolor="#eeeeee"
+        label="External systems (MQTT 192.168.178.218:1883)" style="dashed,filled" fillcolor="#eeeeee"
         fontname="Helvetica-Bold" fontsize=10 color="#aaaaaa"
 
-        MQTT_PCC [shape=cylinder fillcolor="#dddddd" label="WR-Daten (MQTT)\npcc, bat1, soc1"]
-        MQTT_EBOX [shape=cylinder fillcolor="#dddddd" label="ebox/pwr\nsoc2, power_w (signiert!),\ncurrent_a, packs"]
+        MQTT_PCC [shape=cylinder fillcolor="#dddddd" label="Inverter data (MQTT)\npcc, bat1, soc1"]
+        MQTT_EBOX [shape=cylinder fillcolor="#dddddd" label="ebox/pwr\nsoc2, power_w (signed!),\ncurrent_a, packs"]
         MQTT_RATIO [shape=cylinder fillcolor="#dddddd" label="sofar/ratio\nratio_th (default 0.5)\nsofar/bat1_factor (default 0.5)\nsofar/ladesperre, sofar/auto"]
         MQTT_OUT [shape=cylinder fillcolor="#dddddd" label="sofar/state · sofar/waveshare/status\nsoyo/calc · soyo/sent (retain)"]
-        Relays123 [shape=component fillcolor="#dddddd" label="CH1-CH3 (GPIO1/2/41)\nEBox-State 0..7 binär"]
-        Relay4 [shape=component fillcolor="#fce8e8" label="CH4 (GPIO42)\nDO4 -> WR2 abregeln\n3s-Puls"]
-        Soyo [shape=component fillcolor="#dddddd" label="Soyo-Inverter (max 900W)\nRS485 GPIO17 TX / GPIO18 RX\nKeepalive alle 3s"]
+        Relays123 [shape=component fillcolor="#dddddd" label="CH1-CH3 (GPIO1/2/41)\nEBox state 0..7 binary"]
+        Relay4 [shape=component fillcolor="#fce8e8" label="CH4 (GPIO42)\nDO4 -> curtail inverter 2\n3s pulse"]
+        Soyo [shape=component fillcolor="#dddddd" label="Soyo inverter (max 900W)\nRS485 GPIO17 TX / GPIO18 RX\nkeepalive every 3s"]
     }
 
     subgraph cluster_input {
-        label="INPUT (Inputs-Struct)" style="filled" fillcolor="#d4edda"
+        label="INPUT (Inputs struct)" style="filled" fillcolor="#d4edda"
         fontname="Helvetica-Bold" fontsize=10 color="#28a745"
 
-        in_struct [shape=box fillcolor="#b8dfc4" label="Inputs{pcc, bat1, soc1, soc2, ebox_w}\nsoc2 < 0 = unbekannt"]
-        state_ram [shape=box fillcolor="#b8dfc4" label="State (RAM, Cron-übergreifend)\nrelay_st, stable, last_excess, prot,\npeak_today, ladesperre_latched, pcc_buf[10]\n(Reset um Mitternacht, weg bei Reboot)"]
+        in_struct [shape=box fillcolor="#b8dfc4" label="Inputs{pcc, bat1, soc1, soc2, ebox_w}\nsoc2 < 0 = unknown"]
+        state_ram [shape=box fillcolor="#b8dfc4" label="State (RAM, across cycles)\nrelay_st, stable, last_excess, prot,\npeak_today, ladesperre_latched, pcc_buf[10]\n(reset at midnight, lost on reboot)"]
     }
 
     subgraph cluster_forecast {
-        label="DC-FORECAST (Meinel-Klarhimmel)" style="filled" fillcolor="#fff3cd"
+        label="DC FORECAST (Meinel clear-sky)" style="filled" fillcolor="#fff3cd"
         fontname="Helvetica-Bold" fontsize=10 color="#b8860b"
 
-        dc_now [shape=box fillcolor="#ffe69c" label="dc_now()  Süd+Ost-Arrays\nNOAA-Sonnenstand, kt_month\n47.6811N 11.5732E\n-> dc_expected"]
-        peakwin [shape=box fillcolor="#ffe69c" label="Peak-Fenster (Stunde 5..20)\nbest_w, peak_h, win_end_h\nratio_ist via pcc_buf-Mittel"]
+        dc_now [shape=box fillcolor="#ffe69c" label="dc_now()  South+East arrays\nNOAA sun position, kt_month\n47.6811N 11.5732E\n-> dc_expected"]
+        peakwin [shape=box fillcolor="#ffe69c" label="Peak window (hour 5..20)\nbest_w, peak_h, win_end_h\nratio_ist via pcc_buf average"]
     }
 
     subgraph cluster_decision {
-        label="DECISION-PIPELINE (step())" style="filled" fillcolor="#e2d9f3"
+        label="DECISION PIPELINE (step())" style="filled" fillcolor="#e2d9f3"
         fontname="Helvetica-Bold" fontsize=10 color="#6f42c1"
 
-        ladesperre [shape=box fillcolor="#d4c5f0" label="LADESPERRE-Latch (Hysterese)\nLOCK: ratio_ist <= ratio_th\nRELEASE: ratio_ist >= ratio_th+0.15\n(nur bei BELEGTEM Gutwetter)"]
-        decide_fn [shape=box fillcolor="#c9b8f0" label="decide()  dominanzgeordnet\nSOC_UNKNOWN / PCC_OVER_20KW /\nEMERGENCY / INSUFFICIENT /\nPOWER_MATCHING + RAMP_LIMITED"]
-        guards [shape=box fillcolor="#f8d7da" label="apply_guards() — HARD\nLADESPERRE / BATTERY_FULL /\nCRITICAL_SOC (feuert -> Blocking skip)"]
+        ladesperre [shape=box fillcolor="#d4c5f0" label="Charge-block latch (hysteresis)\nLOCK: ratio_ist <= ratio_th\nRELEASE: ratio_ist >= ratio_th+0.15\n(only on confirmed good weather)"]
+        decide_fn [shape=box fillcolor="#c9b8f0" label="decide()  priority-ordered\nSOC_UNKNOWN / PCC_OVER_20KW /\nEMERGENCY / INSUFFICIENT /\nPOWER_MATCHING + RAMP_LIMITED"]
+        guards [shape=box fillcolor="#f8d7da" label="apply_guards() — HARD\ncharge-block / battery-full /\ncritical-soc (fires -> skip blocking)"]
         blocking [shape=box fillcolor="#d4c5f0" label="apply_blocking()\nUP: SWEET_SPOT/TREND/BAT_GUARD\nDOWN: STABILIZING/HYSTERESIS\nEMERGENCY_FORCE bypass"]
     }
 
     subgraph cluster_output {
-        label="OUTPUT (Result-Struct)" style="filled" fillcolor="#cce5ff"
+        label="OUTPUT (Result struct)" style="filled" fillcolor="#cce5ff"
         fontname="Helvetica-Bold" fontsize=10 color="#004085"
 
-        set_relays [shape=box fillcolor="#a8d0f5" label="CH1-CH3 setzen\nfinal_state als Bitmask"]
-        do4_out [shape=box fillcolor="#f8d7da" label="DO4-Puls (CH4)\npcc>22kW unbedingt ODER\npcc>20kW kein State+ / ladesperre"]
-        soyo_calc [shape=box fillcolor="#a8d0f5" label="Soyo-Kalkulation\nEntladung wenn State==0\nRS485-Frame alle 3s"]
+        set_relays [shape=box fillcolor="#a8d0f5" label="set CH1-CH3\nfinal_state as bitmask"]
+        do4_out [shape=box fillcolor="#f8d7da" label="DO4 pulse (CH4)\npcc>22kW unconditional OR\npcc>20kW no state+ / charge-block"]
+        soyo_calc [shape=box fillcolor="#a8d0f5" label="Soyo calculation\ndischarge when State==0\nRS485 frame every 3s"]
         publish [shape=box fillcolor="#a8d0f5" label="MQTT publish\nsofar/state, status, soyo/*"]
     }
 
@@ -69,10 +69,10 @@ digraph WaveshareArch {
     peakwin -> ladesperre [color="#6f42c1" label="ratio_ist\npeak_h"]
     in_struct -> decide_fn [color="#6f42c1"]
     state_ram -> decide_fn [color="#6f42c1" label="relay_st, prot"]
-    ladesperre -> guards [color="#c0392b" label="ladesperre"]
+    ladesperre -> guards [color="#c0392b" label="charge-block"]
     decide_fn -> guards [color="#6f42c1"]
-    guards -> blocking [color="#6f42c1" label="kein Guard"]
-    guards -> set_relays [color="#c0392b" style=dashed label="Guard feuert"]
+    guards -> blocking [color="#6f42c1" label="no guard"]
+    guards -> set_relays [color="#c0392b" style=dashed label="guard fires"]
 
     blocking -> set_relays [color="#004085"]
     blocking -> do4_out [color="#c0392b" style=dashed]
@@ -81,6 +81,6 @@ digraph WaveshareArch {
 
     set_relays -> Relays123 [color="#004085"]
     do4_out -> Relay4 [color="#c0392b"]
-    soyo_calc -> Soyo [color="#004085" label="3s Keepalive"]
+    soyo_calc -> Soyo [color="#004085" label="3s keepalive"]
     publish -> MQTT_OUT [color="#004085"]
 }

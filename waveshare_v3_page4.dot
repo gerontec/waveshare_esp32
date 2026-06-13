@@ -1,7 +1,7 @@
 
 digraph WaveshareSoyo {
     graph [
-        label="fox2db v3.3.34 — LADESPERRE-Logik + Soyo-Entladung (RS485)"
+        label="fox2db v3.3.34 — Charge-block logic + Soyo discharge (RS485)"
         labelloc=t fontsize=14 fontname="Helvetica-Bold"
         rankdir=TB splines=polyline nodesep=0.4 ranksep=0.5
         bgcolor="#f8f9fa" size="11,17" ratio=fill
@@ -10,58 +10,58 @@ digraph WaveshareSoyo {
     edge [fontname="Helvetica" fontsize=10 penwidth=1.2]
 
     subgraph cluster_lade {
-        label="LADESPERRE — Akku morgens leer halten für >20kW-Mittagspeak" style="filled" fillcolor="#fff3cd"
+        label="CHARGE-BLOCK — keep battery empty in the morning for the >20kW midday peak" style="filled" fillcolor="#fff3cd"
         fontname="Helvetica-Bold" fontsize=10 color="#b8860b"
 
-        L0 [shape=oval fillcolor="#ffe69c" label="step() — pro Zyklus neu bewertet\n(zustandslos, kein DB-Event)"]
-        L1 [shape=diamond fillcolor="#fce8e8" label="has_peak?\nbest_w > 20kW heute"]
+        L0 [shape=oval fillcolor="#ffe69c" label="step() — re-evaluated each cycle\n(stateless, no DB event)"]
+        L1 [shape=diamond fillcolor="#fce8e8" label="has_peak?\nbest_w > 20kW today"]
         L2 [shape=diamond fillcolor="#fce8e8" label="local_hour <= peak_h?"]
-        L3 [shape=diamond fillcolor="#fce8e8" label="!peak_today?\n(pcc hat 20kW\nnoch nicht erreicht)"]
-        L4 [shape=diamond fillcolor="#fff3cd" label="ratio_ist gültig\n(>= 0)?"]
-        L5 [shape=diamond fillcolor="#fff3cd" label="Latch (Hysterese):\nLOCK ratio_ist<=ratio_th\nRELEASE ratio_ist>=ratio_th+0.15\n(default 0.5, MQTT sofar/ratio)"]
-        LON [shape=box fillcolor="#f8d7da" label="LADESPERRE AKTIV (latched)\n-> Guard -> State 0\nbelegtes Gutwetter"]
-        LOFF [shape=box fillcolor="#d4edda" label="LADESPERRE OFF (Default)\nSchlechtwetter / unbeurteilbar /\nPeak gesehen / Stunde überschritten"]
+        L3 [shape=diamond fillcolor="#fce8e8" label="!peak_today?\n(pcc has not\nreached 20kW yet)"]
+        L4 [shape=diamond fillcolor="#fff3cd" label="ratio_ist valid\n(>= 0)?"]
+        L5 [shape=diamond fillcolor="#fff3cd" label="Latch (hysteresis):\nLOCK ratio_ist<=ratio_th\nRELEASE ratio_ist>=ratio_th+0.15\n(default 0.5, MQTT sofar/ratio)"]
+        LON [shape=box fillcolor="#f8d7da" label="CHARGE-BLOCK ACTIVE (latched)\n-> guard -> state 0\nconfirmed good weather"]
+        LOFF [shape=box fillcolor="#d4edda" label="CHARGE-BLOCK OFF (default)\nbad weather / undecidable /\npeak seen / hour passed"]
 
         L0 -> L1
-        L1 -> L2 [label="JA" color="green"]
-        L1 -> LOFF [label="NEIN" color="#888888"]
-        L2 -> L3 [label="JA" color="green"]
-        L2 -> LOFF [label="NEIN\npeak_h überschritten" color="#888888"]
-        L3 -> L4 [label="JA" color="green"]
-        L3 -> LOFF [label="NEIN\npeak_today" color="#888888"]
-        L4 -> L5 [label="JA" color="green"]
-        L4 -> LOFF [label="NEIN\nratio<0 unbeurteilbar" color="#888888"]
+        L1 -> L2 [label="YES" color="green"]
+        L1 -> LOFF [label="NO" color="#888888"]
+        L2 -> L3 [label="YES" color="green"]
+        L2 -> LOFF [label="NO\npeak_h passed" color="#888888"]
+        L3 -> L4 [label="YES" color="green"]
+        L3 -> LOFF [label="NO\npeak_today" color="#888888"]
+        L4 -> L5 [label="YES" color="green"]
+        L4 -> LOFF [label="NO\nratio<0 undecidable" color="#888888"]
         L5 -> LON [label="latched" color="red"]
-        L5 -> LOFF [label="released\nratio>=th+0.15 Schlechtwetter" color="orange"]
+        L5 -> LOFF [label="released\nratio>=th+0.15 bad weather" color="orange"]
     }
 
     subgraph cluster_soyo {
-        label="Soyo-Entladung (max 900W, alle 60s soyo/calc, RS485-TX alle 3s)" style="filled" fillcolor="#d4edda"
+        label="Soyo discharge (max 900W, soyo/calc every 60s, RS485-TX every 3s)" style="filled" fillcolor="#d4edda"
         fontname="Helvetica-Bold" fontsize=10 color="#28a745"
 
         S0 [shape=oval fillcolor="#b8dfc4" label="soyo/calc"]
-        Sd1 [shape=diamond fillcolor="#fce8e8" label="State != 0?\n(EBox lädt)"]
-        Sd2 [shape=diamond fillcolor="#fce8e8" label="soc2 < 9%?\n(Entladeschutz)"]
-        Sd3 [shape=diamond fillcolor="#fce8e8" label="ebox > 200W?\n(bat2 lädt)"]
-        Sd4 [shape=diamond fillcolor="#fce8e8" label="pcc > 200W?\n(PV-Überschuss)"]
-        Sd5 [shape=diamond fillcolor="#fff3cd" label="pcc < -100W?\n(Netzbezug)"]
+        Sd1 [shape=diamond fillcolor="#fce8e8" label="State != 0?\n(EBox charging)"]
+        Sd2 [shape=diamond fillcolor="#fce8e8" label="soc2 < 9%?\n(discharge protection)"]
+        Sd3 [shape=diamond fillcolor="#fce8e8" label="ebox > 200W?\n(bat2 charging)"]
+        Sd4 [shape=diamond fillcolor="#fce8e8" label="pcc > 200W?\n(PV surplus)"]
+        Sd5 [shape=diamond fillcolor="#fff3cd" label="pcc < -100W?\n(grid import)"]
         Sw0 [shape=box fillcolor="#dddddd" label="w = 0"]
-        Swc [shape=box fillcolor="#b8dfc4" label="w = |pcc| * 1.01\n(+ Nacht: +468W)"]
-        Sws [shape=box fillcolor="#b8dfc4" label="w = 468W (Nacht)\noder 10W (Tag, Standby)"]
-        SNight [shape=note fillcolor="#fff9c4" label="Nacht = Sonne unter Horizont\nfox::sun_pos() NOAA-Klarhimmel, elev <= 0°\nv3.3.34: dynamisch statt starr 06:00/20:00"]
-        Stx [shape=box fillcolor="#a8d0f5" label="RS485-Frame\n[24 56 00 21 PH PL 80 CRC]\nCRC=(264-PH-PL)&0xFF\nimmer alle 3s (Keepalive 4s)"]
+        Swc [shape=box fillcolor="#b8dfc4" label="w = |pcc| * 1.01\n(+ night: +468W)"]
+        Sws [shape=box fillcolor="#b8dfc4" label="w = 468W (night)\nor 10W (day, standby)"]
+        SNight [shape=note fillcolor="#fff9c4" label="Night = sun below horizon\nfox::sun_pos() NOAA clear-sky, elev <= 0°\nv3.3.34: dynamic instead of fixed 06:00/20:00"]
+        Stx [shape=box fillcolor="#a8d0f5" label="RS485 frame\n[24 56 00 21 PH PL 80 CRC]\nCRC=(264-PH-PL)&0xFF\nalways every 3s (keepalive 4s)"]
 
         S0 -> Sd1
-        Sd1 -> Sw0 [label="JA" color="#888888"]
-        Sd1 -> Sd2 [label="NEIN" color="green"]
-        Sd2 -> Sw0 [label="JA" color="#888888"]
-        Sd2 -> Sd3 [label="NEIN" color="green"]
-        Sd3 -> Sw0 [label="JA" color="#888888"]
-        Sd3 -> Sd4 [label="NEIN" color="green"]
-        Sd4 -> Sw0 [label="JA" color="#888888"]
-        Sd4 -> Sd5 [label="NEIN" color="green"]
-        Sd5 -> Swc [label="JA" color="orange"]
-        Sd5 -> Sws [label="NEIN" color="green"]
+        Sd1 -> Sw0 [label="YES" color="#888888"]
+        Sd1 -> Sd2 [label="NO" color="green"]
+        Sd2 -> Sw0 [label="YES" color="#888888"]
+        Sd2 -> Sd3 [label="NO" color="green"]
+        Sd3 -> Sw0 [label="YES" color="#888888"]
+        Sd3 -> Sd4 [label="NO" color="green"]
+        Sd4 -> Sw0 [label="YES" color="#888888"]
+        Sd4 -> Sd5 [label="NO" color="green"]
+        Sd5 -> Swc [label="YES" color="orange"]
+        Sd5 -> Sws [label="NO" color="green"]
         Sw0 -> Stx
         Swc -> Stx
         Sws -> Stx
