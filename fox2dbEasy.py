@@ -373,7 +373,7 @@ def decide(in_: Inputs, relay_st: int, prot: bool) -> Tuple[int, str, float]:
 def apply_guards(best: int, soc2: float, ladesperre: bool, trace: str) -> Tuple[int, bool, str]:
     if ladesperre:
         if best != 0:
-            trace += " | GUARD:LADESPERRE_BIS_PCC_20KW"
+            trace += " | GUARD:CHARGE_BLOCK_UNTIL_PCC_20KW"
         return 0, True, trace
     if soc2 >= MAX_SOC:
         if best != 0:
@@ -507,7 +507,7 @@ def step(in_: Inputs, st: State, now_local: dt.datetime,
 
 def set_relay(state: int, do4_pulse: bool, reason: str = ""):
     if SHADOW:
-        _log(f"Shadow: Relay→{state} (do4={do4_pulse}) unterdrückt | {reason}")
+        _log(f"Shadow: Relay→{state} (do4={do4_pulse}) suppressed | {reason}")
         return
     # sofar/auto wird bewusst NICHT angefasst: auto bleibt default=1 (ESP regelt
     # selbst); Übernahme durch externen Controller nur per manuellem MQTT sofar/auto 0.
@@ -598,7 +598,7 @@ def main():
     # Zustand IMMER fortschreiben (auch im Shadow) — sonst evolviert die FSM nicht.
     save_state(st)
 
-    _log(f"Result: State {r.final_state} (changed={r.changed} ladesperre={r.ladesperre} "
+    _log(f"Result: State {r.final_state} (changed={r.changed} charge_block={r.ladesperre} "
          f"do4={r.do4_pulse} ratio={r.ratio:.2f}) TRACE: {r.trace}")
 
     _write(PATHS['result'], r.final_state)

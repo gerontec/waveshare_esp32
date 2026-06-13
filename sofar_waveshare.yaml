@@ -30,7 +30,7 @@ substitutions:
   wifi_ssid: your-ssid
   wifi_password: "your-wifi-password"
   ota_password: your-ota-password
-  fw_version: "3.3.34"     # Soyo-Nachtfenster (468W) dynamisch aus Klarhimmel-Sonnenstand (elev≤0°) statt starr 06:00/20:00
+  fw_version: "3.3.35"     # English trace constants: GUARD:CHARGE_BLOCK_UNTIL_PCC_20KW (was LADESPERRE_BIS...)
 
 esphome:
   name: ${device_name}

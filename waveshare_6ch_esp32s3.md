@@ -266,7 +266,7 @@ MQTT `soyo/calc`: `{"W":468,"soc2":63.1,"stale":0}`
 | `STABILIZING` | Zu wenige stabile Zyklen, kein Runterschalten |
 | `HYSTERESIS` | Leistungsdiff <505W, kein Runterschalten |
 | `EMERGENCY_FORCE` | Netzbezug >1020W, sofortiges Runterschalten |
-| `GUARD:LADESPERRE_BIS_PCC_20KW` | LADESPERRE blockiert Laden (Gutwetter belegt, ratio_ist ≤ ratio_th) |
+| `GUARD:CHARGE_BLOCK_UNTIL_PCC_20KW` | Ladesperre blockiert Laden (Gutwetter belegt, ratio_ist ≤ ratio_th) |
 | `GUARD:BATTERY_FULL_STOP` | SOC2=100%, Laden gestoppt |
 | `GUARD:CRITICAL_SOC_PROTECTION_ACTIVATE` | SOC2 <6%, Notladen State 1 |
 | `MQTT_STALE_SAFE` | WR-Daten >3min alt, Zwangs-State 0 |

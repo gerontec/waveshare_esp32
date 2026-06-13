@@ -172,7 +172,7 @@ inline int decide(const Inputs &in, int relay_st, bool prot, float bat1_factor, 
 
 // ── apply_guards() — feuert -> Blocking wird übersprungen ────────────────────
 inline int apply_guards(int best, float soc2, bool ladesperre, char *trace, bool *guard_fired) {
-  if (ladesperre) { if (best != 0) tcat(trace, " | GUARD:LADESPERRE_BIS_PCC_20KW"); *guard_fired = true; return 0; }
+  if (ladesperre) { if (best != 0) tcat(trace, " | GUARD:CHARGE_BLOCK_UNTIL_PCC_20KW"); *guard_fired = true; return 0; }
   if (soc2 >= MAX_SOC) { if (best != 0) tcat(trace, " | GUARD:BATTERY_FULL_STOP"); *guard_fired = true; return 0; }
   if (soc2 >= 0 && soc2 < DD_LOWER) { if (best != 1) tcat(trace, " | GUARD:CRITICAL_SOC_PROTECTION_ACTIVATE"); *guard_fired = true; return 1; }
   *guard_fired = false; return best;
