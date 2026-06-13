@@ -54,7 +54,7 @@ This is more than sensors/switches/automations in YAML:
 | 6 | 7800 W | 0 | 1 | 1 |
 | 7 | 11400 W | 1 | 1 | 1 |
 
-## Control concept (fox2db v3.3.33)
+## Control concept (fox2db v3.3.34)
 Each **60 s** cycle (`step()` in `fox2db_logic.h`):
 
 1. `excess = pcc + ebox_eff + bat1_eff`, where `bat1_eff = (bat1 < 0 ? bat1 : bat1 · bat1_factor)` — Sofar discharge counts fully as a deficit, charge only fractionally (`bat1_factor`, default 0.5, MQTT `sofar/bat1_factor`)
@@ -66,7 +66,9 @@ Each **60 s** cycle (`step()` in `fox2db_logic.h`):
 Charger (EBox) and discharger (Soyo) are mutually exclusive and tile the
 grid‑exchange axis around 0 W → the grid stays near "sweet spot" even when a large
 load (e.g. a heat pump) switches on. The Soyo side is a **gated P‑controller** on
-grid import with a night feed‑forward baseline.
+grid import with a night feed‑forward baseline. "Night" is derived from the
+on‑device clear‑sky model (NOAA sun elevation ≤ 0°, `fox::sun_pos()`), so the
++468 W baseline tracks the seasonal sunrise/sunset instead of a fixed clock time.
 
 ## Scheduling
 A single cooperative ESPHome `App.loop()` (FreeRTOS `loopTask`, Arduino framework)

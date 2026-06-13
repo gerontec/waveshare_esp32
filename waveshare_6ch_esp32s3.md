@@ -164,6 +164,11 @@ elif pcc < −100W:    w = |pcc| × 1.01 + (Nacht: +468W)
 else:                w = 468W (Nacht) oder 10W (Tag, Standby)
 ```
 
+> **Nacht** = Sonne unter Horizont, dynamisch aus dem Klarhimmel-Sonnenstand
+> (`fox::sun_pos()`, NOAA, Elevation ≤ 0°). Seit v3.3.34 ersetzt das den vorher
+> starren Schnitt 06:00/20:00 → das 468-W-Grundlast-Fenster folgt dem saisonalen
+> Sonnenauf-/untergang.
+
 ### RS485-Frame
 
 ```
