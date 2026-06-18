@@ -30,7 +30,7 @@ substitutions:
   wifi_ssid: your-ssid
   wifi_password: "your-wifi-password"
   ota_password: your-ota-password
-  fw_version: "3.3.35"     # English trace constants: GUARD:CHARGE_BLOCK_UNTIL_PCC_20KW (was LADESPERRE_BIS...)
+  fw_version: "3.3.38"     # Wetter-Ratio: pcc_avg5 + bat1_avg5 (5-Min, pivot2db), Akku-voll-Sprung neutral
 
 esphome:
   name: ${device_name}
@@ -89,16 +89,19 @@ globals:
   # Eingänge (aus MQTT)
   - { id: in_pcc,   type: float, restore_value: false, initial_value: '0' }
   - { id: in_bat1,  type: float, restore_value: false, initial_value: '0' }
+  - { id: in_bat1_avg5, type: float, restore_value: false, initial_value: '0' }  # 5-Min-Mittel bat1 (pivot2db) → nur Wetter-Ratio
+  - { id: in_pcc_avg5,  type: float, restore_value: false, initial_value: '0' }  # 5-Min-Mittel pcc  (pivot2db) → nur Wetter-Ratio
   - { id: in_soc1,  type: float, restore_value: false, initial_value: '0' }
   - { id: in_soc2,  type: float, restore_value: false, initial_value: '-1' }   # -1 = unbekannt -> HOLD
   - { id: in_ebox,  type: float, restore_value: false, initial_value: '0' }
+  - { id: in_pv,    type: float, restore_value: false, initial_value: '0' }   # gemessene Sofar-PV (Power_PV1+PV2, W) → Soyo is_night
   - { id: last_inv_ms, type: int, restore_value: false, initial_value: '0' }
   - { id: in_z2,      type: float, restore_value: false, initial_value: '0' }   # Z2 Zähler wirkleist (W)
   - { id: in_pcc_null, type: bool, restore_value: false, initial_value: 'false' } # PCC war null (Lesefehler)
   # Schalter (per MQTT)
   - { id: auto_enable,       type: bool, restore_value: false, initial_value: 'true' }
   - { id: ladesperre_enable, type: bool, restore_value: false, initial_value: 'true' }
-  - { id: ladesperre_ratio,  type: float, restore_value: false, initial_value: '0.5' } # Schlechtwetter-Freigabe-Schwelle (MQTT: sofar/ratio)
+  - { id: ladesperre_ratio,  type: float, restore_value: false, initial_value: '0.62' } # Gutwetter-Erkennung, Ratio mit geglättetem bat1_avg5 (MQTT: sofar/ratio)
   - { id: bat1_charge_factor, type: float, restore_value: false, initial_value: '0.5' } # Anteil der Sofar-Ladung, der als EBox-Überschuss zählt (MQTT: sofar/bat1_factor, 0..1)
   - { id: do4_req,           type: bool, restore_value: false, initial_value: 'false' }
   - { id: g_peak_h,    type: int, restore_value: false, initial_value: '-1' }
@@ -274,7 +277,10 @@ mqtt:
                            || strstr(raw, "\"ActivePower_PCC_Total\": null") != nullptr;
             id(in_pcc)  = num(raw, "ActivePower_PCC_Total", 0) * 1000.0f;
             id(in_bat1) = num(raw, "Power_Bat1", 0) * 1000.0f;
+            id(in_bat1_avg5) = num(raw, "Power_Bat1_avg5", num(raw, "Power_Bat1", 0)) * 1000.0f;
+            id(in_pcc_avg5)  = num(raw, "ActivePower_PCC_Total_avg5", num(raw, "ActivePower_PCC_Total", 0)) * 1000.0f;
             id(in_soc1) = num(raw, "SOC_Bat1", 0);
+            id(in_pv)   = (num(raw, "Power_PV1", 0) + num(raw, "Power_PV2", 0)) * 1000.0f;
             id(last_inv_ms) = (int) millis();
 
     # ── Z2-Zähler: Wirkleistung als PCC-Fallback bei NaN ─────────────────
@@ -408,6 +414,7 @@ interval:
             pcc_raw = -id(in_z2);
           in.pcc = pcc_raw; in.bat1 = id(in_bat1); in.soc1 = id(in_soc1);
           in.soc2 = id(in_soc2); in.ebox_w = id(in_ebox);
+          in.bat1_avg5 = id(in_bat1_avg5); in.pcc_avg5 = id(in_pcc_avg5);
 
           int local_sec = t.hour * 3600 + t.minute * 60 + t.second;
           fox::Result r = fox::step(in, fox::g_state, (time_t) t.timestamp, local_sec,
@@ -458,7 +465,6 @@ interval:
     then:
       - lambda: |-
           int w = 0;
-          auto t = id(sntp_time).now();
           // Stale: Inverter-Daten älter als 3min → 0W
           bool stale = (uint32_t)millis() - (uint32_t)id(last_inv_ms) > 180000UL
                        || id(last_inv_ms) == 0;
@@ -466,13 +472,10 @@ interval:
             int   st   = fox::g_state.relay_st;   // lokal, kein Pi nötig
             float soc2 = id(in_soc2);
             float pcc  = id(in_pcc);
-            // Nacht dynamisch aus Klarhimmelmodell: Sonnenstand ≤ 0° (unter Horizont)
-            // statt starr 06:00/20:00 — folgt so dem saisonalen Sonnenauf-/untergang.
-            bool is_night = false;
-            if (t.is_valid()) {
-              double elev, az; fox::sun_pos((time_t) t.timestamp, elev, az);
-              is_night = (elev <= 0.0);
-            }
+            // "Nacht" = gemessene PV < 100W. Der PV-String-Wert ist ehrlich
+            // (nicht überschätzt wie das dc-Modell) UND batterieunabhängig
+            // (anders als pcc, den der Akku nachts auf ~0 verfälscht).
+            bool is_night = id(in_pv) < fox::NIGHT_DC_TH;
             if (st != 0) {
               w = 0;  // EBox aktiv → soyo nie
             } else if (soc2 >= 0 && soc2 < 9.0f) {

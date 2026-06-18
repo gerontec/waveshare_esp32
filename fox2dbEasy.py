@@ -45,7 +45,7 @@ EMERGENCY_IMPORT = MAX_GRID_DRAW + EMERGENCY_MARGIN   # = 1020.0 (an G gekoppelt
 BAT_DISCHARGE_TH = -110.0
 SWEET_SPOT_PCC   = 160.0
 MAX_DROP_RATE    = -20.0
-LADESPERRE_HYST  = 0.15                           # Hysterese-Band für Ladesperre-Ratio (Latch)
+LADESPERRE_HYST  = 0.25                           # Hysterese-Band für Ladesperre-Ratio (Latch); breit gegen rohes pcc-Rauschen (Release 0.62+0.25=0.87)
 BAT1_CHARGE_FACTOR = 0.5                           # Anteil der Sofar-Ladung (bat1>0), der als EBox-Überschuss zählt
 DD_LOWER         = 6
 DD_UPPER         = 8
@@ -54,7 +54,7 @@ PCC_PEAK_TH      = 20000.0
 PCC_HARD_TH      = 22000.0     # bedingungsloser DO4-Trigger
 
 LADESPERRE_ENABLE = True       # YAML default
-LADESPERRE_RATIO  = 0.5        # YAML default (sofar/ratio)
+LADESPERRE_RATIO  = 0.62       # YAML default (sofar/ratio); Ratio nutzt geglätteten bat1 (avg5), Gutwetter-Median ~0.62 (s. 2026-06-18)
 
 # STATE_TO_POWER {0:0,1:3000,2:3650,3:6650,4:3900,5:7100,6:7800,7:11400}
 _STATE_POWER  = [0, 3000, 3650, 6650, 3900, 7100, 7800, 11400]
@@ -159,9 +159,6 @@ class State:
         self.peak_today  = False          # pcc hat heute PCC_PEAK_TH überschritten
         self.ladesperre_latched = False   # Ladesperre-Latch (Hysterese gegen Flattern)
         self.last_yday   = -1
-        self.pcc_buf     = [0.0] * 10
-        self.pcc_n       = 0
-        self.pcc_i       = 0
 
 def load_state() -> State:
     st = State()
@@ -176,10 +173,6 @@ def load_state() -> State:
     st.peak_today  = bool(d.get('peak_today', False))
     st.ladesperre_latched = bool(d.get('ladesperre_latched', False))
     st.last_yday   = int(d.get('last_yday', -1))
-    buf            = [float(x) for x in d.get('pcc_buf', [])]
-    st.pcc_buf     = (buf + [0.0] * 10)[:10]
-    st.pcc_n       = int(d.get('pcc_n', 0))
-    st.pcc_i       = int(d.get('pcc_i', 0))
     return st
 
 def save_state(st: State):
@@ -187,12 +180,14 @@ def save_state(st: State):
         'relay_st': st.relay_st, 'stable': st.stable, 'last_excess': st.last_excess,
         'prot': st.prot, 'peak_today': st.peak_today, 'last_yday': st.last_yday,
         'ladesperre_latched': st.ladesperre_latched,
-        'pcc_buf': st.pcc_buf, 'pcc_n': st.pcc_n, 'pcc_i': st.pcc_i,
     }))
 
 class Inputs:
-    def __init__(self, pcc, bat1, soc1, soc2, ebox_w):
+    def __init__(self, pcc, bat1, soc1, soc2, ebox_w, bat1_avg5=None, pcc_avg5=None):
         self.pcc, self.bat1, self.soc1, self.soc2, self.ebox_w = pcc, bat1, soc1, soc2, ebox_w
+        # 5-Min-Mittel (pivot2db) nur für die Wetter-Ratio; fehlen sie, Fallback auf Momentanwert
+        self.bat1_avg5 = bat1 if bat1_avg5 is None else bat1_avg5
+        self.pcc_avg5  = pcc  if pcc_avg5  is None else pcc_avg5
 
 class Result:
     def __init__(self):
@@ -243,6 +238,10 @@ def fetch_mqtt() -> Optional[Dict]:
                 'pcc':      float(pcc_val or 0) * 1000,
                 'pcc_null': (pcc_val is None) or ('"ActivePower_PCC_Total":null' in raw),
                 'bat1':     float(j.get('Power_Bat1') or 0) * 1000,
+                'bat1_avg5': float((j.get('Power_Bat1_avg5') if j.get('Power_Bat1_avg5') is not None
+                                    else j.get('Power_Bat1')) or 0) * 1000,
+                'pcc_avg5': float((j.get('ActivePower_PCC_Total_avg5') if j.get('ActivePower_PCC_Total_avg5') is not None
+                                   else j.get('ActivePower_PCC_Total')) or 0) * 1000,
                 'soc1':     float(j.get('SOC_Bat1')   or 0),
                 'load_sys': float(j.get('ActivePower_Load_Sys') or 0) * 1000,
             }
@@ -417,20 +416,11 @@ def step(in_: Inputs, st: State, now_local: dt.datetime,
     local_yday    = now_local.timetuple().tm_yday
 
     if local_yday != st.last_yday:            # Mitternachts-Reset
-        st.pcc_n = 0
-        st.pcc_i = 0
         st.peak_today = False
         st.ladesperre_latched = False
         st.last_yday  = local_yday
 
     r.dc_expected = dc_now(now_utc, month)
-
-    st.pcc_buf[st.pcc_i] = in_.pcc
-    st.pcc_i = (st.pcc_i + 1) % 10
-    if st.pcc_n < 10:
-        st.pcc_n += 1
-    pcc_avg_valid = st.pcc_n >= 3
-    pcc_avg = sum(st.pcc_buf[:st.pcc_n]) / st.pcc_n if pcc_avg_valid else 0.0
 
     # Peak-Fenster immer berechnen (auch ohne ladesperre_enable) → für Reporting
     midnight = now_utc - local_sec_day
@@ -449,8 +439,10 @@ def step(in_: Inputs, st: State, now_local: dt.datetime,
         st.peak_today = True
 
     # Ist-Wetter-Ratio (ratio > Schwelle ⇒ Schlechtwetter); -1 = nicht berechenbar
-    if pcc_avg_valid and r.dc_expected > 5000:
-        r.ratio = (r.dc_expected - (pcc_avg + in_.ebox_w + in_.bat1)) / r.dc_expected
+    # Proxy = pcc_avg5 + ebox + bat1_avg5 (beide 5-Min-Mittel aus pivot2db): Gutwetter-
+    # Signal der Akkuladung ohne 0↔2500W-Flattern; Akku-voll-Sprung (bat1→pcc) hebt sich auf.
+    if r.dc_expected > 5000:
+        r.ratio = (r.dc_expected - (in_.pcc_avg5 + in_.ebox_w + in_.bat1_avg5)) / r.dc_expected
 
     ladesperre = False
     if ladesperre_enable:
@@ -580,6 +572,8 @@ def main():
 
     pcc  = mqtt_data['pcc']
     bat1 = mqtt_data['bat1']
+    bat1_avg5 = mqtt_data['bat1_avg5']
+    pcc_avg5  = mqtt_data['pcc_avg5']
     soc1 = mqtt_data['soc1']
     # PCC: Inverter-Wert, Z2 nur als Fallback bei null-Lesefehler (wie YAML)
     if mqtt_data['pcc_null'] and z2 != 0.0:
@@ -587,7 +581,8 @@ def main():
         _log(f"PCC=null → Z2-Fallback PCC={pcc:.0f}W")
 
     st = load_state()
-    in_ = Inputs(pcc=pcc, bat1=bat1, soc1=soc1, soc2=soc2, ebox_w=ebox_w)
+    in_ = Inputs(pcc=pcc, bat1=bat1, soc1=soc1, soc2=soc2, ebox_w=ebox_w,
+                 bat1_avg5=bat1_avg5, pcc_avg5=pcc_avg5)
 
     _log(f"Data: PCC={pcc:.0f}W  Bat1={bat1:.0f}W  SOC1={soc1:.1f}%  SOC2={soc2:.1f}%  "
          f"EBox={ebox_w:.0f}W  State={st.relay_st}  Stable={st.stable}  Prot={st.prot}")
