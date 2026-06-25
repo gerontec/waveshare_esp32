@@ -42,10 +42,11 @@ inline int state_power(int s) {
   static const int P[8] = {0, 3000, 3650, 6650, 3900, 7100, 7800, 11400};
   return (s >= 0 && s <= 7) ? P[s] : 0;
 }
-// SORTED_STATES nach Leistung sortiert: [0,1,2,4,3,5,6,7]
-static const int SORTED_STATES[8] = {0, 1, 2, 4, 3, 5, 6, 7};
+// SORTED_STATES nach Leistung sortiert, OHNE State 2 (ch2 nur in Kombination erlaubt): [0,1,4,3,5,6,7]
+static const int N_SORTED = 7;
+static const int SORTED_STATES[N_SORTED] = {0, 1, 4, 3, 5, 6, 7};
 inline int sorted_index(int s) {
-  for (int i = 0; i < 8; i++) if (SORTED_STATES[i] == s) return i;
+  for (int i = 0; i < N_SORTED; i++) if (SORTED_STATES[i] == s) return i;
   return 0;
 }
 
@@ -100,6 +101,34 @@ inline double dc_now(time_t t, int month) {
   return calc_arrays(ARRAYS, 2, t, month) + calc_arrays(ARRAYS_EAST, 3, t, month);
 }
 
+// Astronomischer lokaler Mittag (Sonnen-Meridiandurchgang, Stundenwinkel ha=0) als unix-UTC.
+// NOAA-eqtime bei 12 UTC ausgewertet (Tagesvariation der eqtime vernachlässigbar).
+inline time_t solar_noon_utc(time_t ref_utc) {
+  time_t utc_midnight = (ref_utc / 86400) * 86400;
+  time_t tmid = utc_midnight + 12 * 3600;
+  struct tm g; gmtime_r(&tmid, &g);
+  int yday0 = g.tm_yday;                              // (hour-12)/24 = 0 am Mittag
+  double gamma = 2.0 * M_PI / 365.0 * yday0;
+  double eqtime = 229.18 * (0.000075 + 0.001868 * cos(gamma) - 0.032077 * sin(gamma)
+                            - 0.014615 * cos(2 * gamma) - 0.040849 * sin(2 * gamma));
+  double hour_utc = (720.0 - eqtime - 4.0 * LON) / 60.0;  // tst = 720 min ⇒ ha = 0
+  return utc_midnight + (time_t)(hour_utc * 3600.0);
+}
+
+// ── Temperatur-Derating (defensiv) ───────────────────────────────────────────
+// Konservativer Datenblatt-Koeffizient (DAH 420W N-Type, -0.30 %/°C), NOCT-Zelltemp.
+// Greift durch sin(Elevation) nur bei hohem Sonnenstand spürbar (dort gilt der
+// Effekt real). Wird NUR angewendet, wenn eine gültige Außentemp vorliegt.
+static const double TEMP_COEFF = -0.0030;
+static const double NOCT       = 45.0;
+static const double T_STC      = 25.0;
+inline double dc_temp_factor(double elev_deg, double ambient) {
+  double g = fmax(0.0, sin(d2r(elev_deg)));                 // POA-Anteil 0..1 (klar)
+  double cell = ambient + (NOCT - 20.0) / 800.0 * 1000.0 * g;
+  double f = 1.0 + TEMP_COEFF * (cell - T_STC);
+  return fmax(0.85, fmin(1.0, f));                          // defensiv geklemmt
+}
+
 // ── Zustand (im RAM, über Cron-Zyklen hinweg) ────────────────────────────────
 struct State {
   int   relay_st = 0;
@@ -113,7 +142,8 @@ struct State {
 
 // pcc_avg5 + bat1_avg5: 5-Min-Mittel aus pivot2db/MariaDB, nur für die Wetter-Ratio.
 // Beide über dasselbe Fenster gemittelt → Akku-voll-Sprung (bat1→pcc) ist neutral.
-struct Inputs { float pcc, bat1, soc1, soc2, ebox_w, bat1_avg5, pcc_avg5; };
+struct Inputs { float pcc, bat1, soc1, soc2, ebox_w, bat1_avg5, pcc_avg5;
+                float aussen_temp = 0; bool aussen_valid = false; };
 
 struct Result {
   int   final_state = 0;
@@ -124,6 +154,7 @@ struct Result {
   float ratio = -1.0f;  // Ist-Wetter-Ratio (Anteil fehlender Klarhimmel-Leistung; -1 = nicht berechenbar)
   int   peak_h = -1;    // lokale Stunde des DC-Peaks (-1 = kein Peak heute)
   int   win_end_h = -1; // letzte lokale Stunde mit dc > PCC_PEAK_TH
+  float noon_h = -1.0f; // astronomischer lokaler Mittag (Dezimalstunde, Reporting)
   char  trace[160] = "";
 };
 
@@ -142,7 +173,7 @@ inline int decide(const Inputs &in, int relay_st, bool prot, float bat1_factor, 
     return relay_st;
   }
   if (in.pcc > PCC_PEAK_TH && in.soc2 < MAX_SOC) {
-    int next_st = relay_st + 1; if (next_st > 7) next_st = 7;
+    int next_st = relay_st + 1; if (next_st == 2) next_st = 3; if (next_st > 7) next_st = 7;
     if (next_st > relay_st) {
       snprintf(trace, 80, "PCC_OVER_20KW (SOC=%.0f%% State%d->%d)", in.soc2, relay_st, next_st);
       *excess_out = excess; return next_st;
@@ -158,11 +189,11 @@ inline int decide(const Inputs &in, int relay_st, bool prot, float bat1_factor, 
   }
   float budget = excess + MAX_GRID_DRAW;
   int best = 0, best_pow = -1;
-  for (int s = 0; s <= 7; s++) { int p = state_power(s); if (p <= budget && p > best_pow) { best = s; best_pow = p; } }
+  for (int s = 0; s <= 7; s++) { if (s == 2) continue; int p = state_power(s); if (p <= budget && p > best_pow) { best = s; best_pow = p; } }
   snprintf(trace, 120, "POWER_MATCHING (Excess: %.0fW, Budget: %.0fW)", excess, budget);
   if (best > relay_st) {                       // Ramp-Limiting (State-Nr.-Vergleich, wie Python)
     int idx = sorted_index(relay_st);
-    int next_st = SORTED_STATES[(idx + 1 < 8) ? idx + 1 : 7];
+    int next_st = SORTED_STATES[(idx + 1 < N_SORTED) ? idx + 1 : N_SORTED - 1];
     if (best > next_st) {
       char tmp[48]; snprintf(tmp, sizeof(tmp), " | RAMP_LIMITED (%d->%d)", best, next_st);
       tcat(trace, tmp); best = next_st;
@@ -211,6 +242,11 @@ inline Result step(const Inputs &in, State &st, time_t now_utc, int local_sec_da
     st.last_yday = local_yday;
   }
   r.dc_expected = dc_now(now_utc, month);
+  // Temperatur-Derating nur bei gültiger, plausibler Außentemp; sonst unverändert.
+  if (in.aussen_valid && in.aussen_temp > -40.0f && in.aussen_temp < 55.0f && r.dc_expected > 0) {
+    double elev, azN; sun_pos(now_utc, elev, azN);
+    r.dc_expected *= dc_temp_factor(elev, in.aussen_temp);
+  }
 
   // Peak-Fenster immer berechnen (auch ohne ladesperre_enable) → für JSON-Reporting
   time_t midnight = now_utc - local_sec_day;
@@ -222,6 +258,11 @@ inline Result step(const Inputs &in, State &st, time_t now_utc, int local_sec_da
   }
   r.peak_h    = (best_w > PCC_PEAK_TH) ? peak_h_loc : -1;
   r.win_end_h = win_end_loc;
+
+  // Astronomischer lokaler Mittag → harte Obergrenze für die Ladesperre:
+  // Laden startet IMMER spätestens zum Sonnen-Meridiandurchgang.
+  time_t noon_utc = solar_noon_utc(now_utc);
+  r.noon_h = (float)((double)(noon_utc - midnight) / 3600.0);  // lokale Dezimalstunde
 
   // LADESPERRE: zeitbasiert bis win_end_h.
   // Freigabe: Schlechtwetter (ratio>ladesperre_ratio) ODER pcc>20kW ODER Peak-Stunde überschritten.
@@ -239,8 +280,10 @@ inline Result step(const Inputs &in, State &st, time_t now_utc, int local_sec_da
   if (ladesperre_enable) {
     bool has_peak = best_w > PCC_PEAK_TH;
     // Zeitfenster: Peak vorhergesagt, vor/in Peak-Stunde, PCC hat 20kW noch nicht erreicht.
+    // Harte Obergrenze astronomischer Mittag (now_utc < noon_utc) → Laden startet
+    // spätestens zum lokalen Sonnenhöchststand, auch wenn die Peak-Stunde später läge.
     bool in_window = has_peak && win_end_loc >= 0 && !st.peak_today
-                     && (local_hour <= peak_h_loc);
+                     && (local_hour <= peak_h_loc) && (now_utc < noon_utc);
     // LATCH mit Hysterese gegen Flattern an der Ratio-Schwelle:
     //   LOCK   bei belegtem Gutwetter (ratio <= ladesperre_ratio)
     //   RELEASE erst bei klarem Schlechtwetter (ratio >= ladesperre_ratio + LADESPERRE_HYST)
