@@ -78,7 +78,35 @@ Steuerung:
 mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/relay/1   -m '{"v":1}'
 mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/relay/all -m '{"v":0}'
 mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/scan      -m 'go'
+mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/openwifi  -m '{"ENABLE":0}'
 ```
+
+## OTA — erst zurück auf f24
+
+Am offenen AP hängt das Board in einem fremden Subnetz (`OpenWrtDach` →
+`192.168.4.x`), das von `192.168.178.x`/`192.168.5.x` aus **nicht erreichbar**
+ist — OTA läuft dort in `Connection refused` auf Port 3232. Deshalb vorher:
+
+```bash
+mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/openwifi -m '{"ENABLE":0}'
+# ~30 s warten, IP aus .../status lesen, dann:
+esphome upload rs485defect.yaml --device <ip-aus-status>
+```
+
+`open_enabled` ist nicht persistent: nach dem OTA-Reboot wird wieder das offene
+WLAN bevorzugt. Verifiziert: Rückkehr auf `f24` (`192.168.178.58`, RSSI −56),
+OTA-Upload in 3,66 s, `OTA successful`.
+
+## Messwerte (Standort Schreibtisch)
+
+| SSID | RSSI | offen |
+|---|---:|:-:|
+| `OpenWrtDach` | −63 … −69 dBm | ja → gewählt |
+| `f7240` (Freetz-Repeater) | −83 dBm | ja |
+| `ESP_F5246E` | −76 dBm | ja, aber Geräte-AP → gefiltert |
+
+`OpenWrtDach` hat Routing zum Broker, MQTT läuft darüber weiter — der Watchdog
+schlägt dort also nicht zu.
 
 Der eigene MQTT-Prefix hält die Produktions-Topics `waveshare/relay/*` des
 Boards `192.168.178.187` frei — sonst würden beide Boards mitschalten.

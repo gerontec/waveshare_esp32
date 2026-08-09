@@ -8,13 +8,19 @@
 #    CH1 GPIO1   CH2 GPIO2   CH3 GPIO41
 #    CH4 GPIO42  CH5 GPIO45  CH6 GPIO46
 #
-#  Eigener MQTT-Prefix "rs485defect", damit die Produktions-Topics
+#  Eigener MQTT-Prefix "rs485defect-wav-esp32s3", damit die Produktions-Topics
 #  (waveshare/relay/...) des Boards 192.168.178.187 nicht mitgeschaltet werden.
 #
-#  Steuerung:
-#    mosquitto_pub -h 192.168.178.218 -t rs485defect/relay/1   -m '{"v":1}'
-#    mosquitto_pub -h 192.168.178.218 -t rs485defect/relay/all -m '{"v":0}'
-#  Status (30s, retained):  rs485defect/status
+#  WLAN: offener AP bevorzugt (open_wifi_join.h), f24 nur Fallback.
+#  Am offenen AP ist das Board aus 192.168.178.x NICHT per OTA erreichbar
+#  -> vorher {"ENABLE":0} auf .../openwifi schicken.
+#
+#  Steuerung (alles retain=false):
+#    mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/relay/1   -m '{"v":1}'
+#    mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/relay/all -m '{"v":0}'
+#    mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/openwifi  -m '{"ENABLE":0}'
+#    mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/scan      -m 'go'
+#  Status (30s):  rs485defect-wav-esp32s3/status
 # ════════════════════════════════════════════════════════════════════════════
 
 substitutions:
@@ -25,7 +31,7 @@ substitutions:
   ota_password: waveshare2026
   ap_ssid: RS485defect-AP
   open_mqtt_timeout: "180000"   # ms ohne MQTT am offenen AP -> Blacklist
-  fw_version: "1.1"
+  fw_version: "1.2"
 
 esphome:
   name: ${device_name}
@@ -91,6 +97,23 @@ mqtt:
     - topic: ${device_name}/scan
       then:
         - script.execute: scan_open
+
+    # Offenes WLAN an/aus: {"ENABLE":0} holt das Board zurück auf f24
+    # (nötig für OTA, weil 192.168.4.x von außen nicht erreichbar ist)
+    - topic: ${device_name}/openwifi
+      then:
+        - lambda: |-
+            bool en = x.find("1") != std::string::npos;
+            id(open_enabled) = en;
+            ESP_LOGI("open_wifi", "Offenes WLAN %s", en ? "aktiviert" : "deaktiviert -> f24");
+            if (en) {
+              id(scan_open).execute();
+            } else {
+              id(open_ap_ssid)  = "";
+              id(open_ap_rssi)  = -127;
+              id(open_ap_count) = 0;
+              ow_prefer("", "${wifi_ssid}", "${wifi_password}");
+            }
     - topic: ${device_name}/relay/1
       then:
         - lambda: 'x.find("1") != std::string::npos ? id(ch1).turn_on() : id(ch1).turn_off();'
@@ -139,6 +162,12 @@ globals:
     type: int
     restore_value: false
     initial_value: '0'
+  # false -> offenes WLAN ignorieren, fest auf f24 bleiben (OTA aus 192.168.178.x
+  # erreichbar). Nicht persistent: nach Reboot wieder offenes WLAN bevorzugt.
+  - id: open_enabled
+    type: bool
+    restore_value: false
+    initial_value: 'true'
 
 script:
   # Offene APs suchen und den besten bevorzugen (f24 bleibt Fallback)
@@ -146,6 +175,8 @@ script:
     mode: single
     then:
       - lambda: |-
+          if (!id(open_enabled))
+            return;
           OpenApResult r = ow_find_open("${ap_ssid}");
           id(open_ap_ssid)  = r.ssid;
           id(open_ap_rssi)  = r.rssi;
