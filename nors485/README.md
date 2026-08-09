@@ -1,0 +1,87 @@
+# nors485 — Waveshare ESP32-S3-Relay-6CH mit defektem RS485
+
+Firmware für ein Board, dessen SP3485-Zweig (GPIO17/18/3) defekt ist. Die
+6 Relais funktionieren einwandfrei, deshalb läuft das Board als reines
+Relais-/Telemetrie-Gerät weiter. UART/RS485 ist bewusst **nicht** konfiguriert.
+
+Board: MAC `50:78:7D:07:FF:E4`, Gerätename `rs485defect-wav-esp32s3`.
+
+## Dateien
+
+| Datei | Inhalt |
+|---|---|
+| `rs485defect.yaml` | ESPHome-Konfiguration |
+| `open_wifi_join.h` | Lib: offenes WLAN bevorzugen, `f24` als Fallback |
+
+## Relais
+
+| Kanal | GPIO |
+|---|---|
+| CH1 | GPIO1 |
+| CH2 | GPIO2 |
+| CH3 | GPIO41 |
+| CH4 | GPIO42 |
+| CH5 | GPIO45 |
+| CH6 | GPIO46 |
+
+Beim Boot immer `ALWAYS_OFF`. GPIO45/46 sind Strapping-Pins — ESPHome warnt
+beim Build, im Betrieb unkritisch.
+
+## WLAN — passwortlos bevorzugt
+
+`open_wifi_join.h` sucht offene APs und trägt den stärksten mit Priorität 10
+vor `f24` (Priorität 0) in die STA-Liste ein. Ein passwortloser `WiFiAP` setzt
+in ESPHome automatisch `threshold.authmode = WIFI_AUTH_OPEN`; `min_auth_mode`
+(Default WPA2 auf ESP32) greift nur bei gesetztem Passwort.
+
+Zwei Fallstricke, die hier gelöst sind:
+
+* **`clear_sta()` wirft die laufende Verbindung weg** (`selected_sta_index_ = -1`).
+  Die STA-Liste wird deshalb nur bei echter Änderung neu gebaut, sonst löst
+  jeder Scan-Durchlauf einen Reconnect aus.
+* **Eigener Blocking-Scan kollidiert mit ESPHomes Scan-Statemachine**
+  (`esp_wifi_scan_get_ap_record failed: ESP_FAIL`, 0 Treffer). Liefert der
+  eigene Scan nichts, werden ESPHomes eigene Scan-Ergebnisse ausgewertet
+  (`get_scan_result()` / `get_with_auth()`).
+
+Nicht als Component, sondern als Funktions-Header: `open_wifi_scan.h` im
+Hauptordner definierte eine `esphome::Component`, die per `includes:` zwar
+instanziiert, aber nie mit `App.register_component()` registriert wurde —
+`setup()` lief nie.
+
+### Filter
+
+* Geräte-APs (`ESP_*`, `ESP-*`, `ESPHome*`) werden übersprungen — Fallback-APs
+  ohne Uplink.
+* Der eigene AP (`RS485defect-AP`) ebenfalls.
+* **Watchdog:** Hängt das Board am offenen AP und MQTT kommt 180 s nicht
+  zustande, wandert die SSID auf eine RAM-Blacklist und `f24` übernimmt wieder.
+  Nach einem Reboot wird alles neu probiert.
+
+## MQTT
+
+Broker `192.168.178.218:1883`, Prefix `rs485defect-wav-esp32s3`, alles
+`retain: false`.
+
+Status alle 30 s auf `rs485defect-wav-esp32s3/status`:
+
+```json
+{"name":"rs485defect-wav-esp32s3","ip":"192.168.4.249","ssid":"OpenWrtDach",
+ "rssi":-78,"open_ap":"OpenWrtDach","open_rssi":-63,"open_count":2,
+ "relays":[0,0,0,0,0,0],"uptime":121,"mem_free":252172,
+ "fw":"1.1","rs485":"defekt"}
+```
+
+Steuerung:
+
+```bash
+mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/relay/1   -m '{"v":1}'
+mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/relay/all -m '{"v":0}'
+mosquitto_pub -h 192.168.178.218 -t rs485defect-wav-esp32s3/scan      -m 'go'
+```
+
+Der eigene MQTT-Prefix hält die Produktions-Topics `waveshare/relay/*` des
+Boards `192.168.178.187` frei — sonst würden beide Boards mitschalten.
+
+Zusätzlich Web-Oberfläche auf Port 80 zum Handschalten, OTA-Passwort
+`waveshare2026`.

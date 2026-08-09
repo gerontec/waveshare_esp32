@@ -1,0 +1,232 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  rs485defect — Waveshare ESP32-S3-Relay-6CH mit defektem RS485-Zweig
+#
+#  Board MAC 50:78:7D:07:FF:E4 (USB-JTAG /dev/ttyACM0)
+#  Der SP3485-Zweig (GPIO17/18/3) ist defekt -> UART bewusst NICHT konfiguriert.
+#  Verwendbar bleiben die 6 Relais:
+#
+#    CH1 GPIO1   CH2 GPIO2   CH3 GPIO41
+#    CH4 GPIO42  CH5 GPIO45  CH6 GPIO46
+#
+#  Eigener MQTT-Prefix "rs485defect", damit die Produktions-Topics
+#  (waveshare/relay/...) des Boards 192.168.178.187 nicht mitgeschaltet werden.
+#
+#  Steuerung:
+#    mosquitto_pub -h 192.168.178.218 -t rs485defect/relay/1   -m '{"v":1}'
+#    mosquitto_pub -h 192.168.178.218 -t rs485defect/relay/all -m '{"v":0}'
+#  Status (30s, retained):  rs485defect/status
+# ════════════════════════════════════════════════════════════════════════════
+
+substitutions:
+  device_name: rs485defect-wav-esp32s3
+  mqtt_broker: 192.168.178.218
+  wifi_ssid: f24
+  wifi_password: "9876543210"
+  ota_password: waveshare2026
+  ap_ssid: RS485defect-AP
+  open_mqtt_timeout: "180000"   # ms ohne MQTT am offenen AP -> Blacklist
+  fw_version: "1.1"
+
+esphome:
+  name: ${device_name}
+  friendly_name: RS485 defekt (6CH Relay)
+  includes:
+    - open_wifi_join.h
+  on_boot:
+    priority: -100
+    then:
+      - wait_until:
+          condition:
+            wifi.connected:
+      - delay: 10s
+      - script.execute: scan_open
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: arduino
+
+network:
+  enable_ipv6: true
+
+logger:
+  level: INFO
+  baud_rate: 115200
+  hardware_uart: USB_SERIAL_JTAG   # Konsole auf /dev/ttyACM0 (kein RS485 im Weg)
+
+ota:
+  - platform: esphome
+    password: ${ota_password}
+
+wifi:
+  id: wifi_comp
+  ssid: ${wifi_ssid}
+  password: ${wifi_password}
+  reboot_timeout: 5min
+  ap:
+    ssid: ${ap_ssid}
+    password: ${ota_password}
+
+web_server:
+  port: 80
+
+mqtt:
+  id: mqtt_client
+  broker: ${mqtt_broker}
+  port: 1883
+  client_id: ${device_name}
+  topic_prefix: ${device_name}
+  discovery: false
+  birth_message:
+    topic: ${device_name}/online
+    payload: "1"
+    retain: false
+  will_message:
+    topic: ${device_name}/online
+    payload: "0"
+    retain: false
+  on_message:
+    # Sofort-Scan nach offenen APs anstoßen
+    - topic: ${device_name}/scan
+      then:
+        - script.execute: scan_open
+    - topic: ${device_name}/relay/1
+      then:
+        - lambda: 'x.find("1") != std::string::npos ? id(ch1).turn_on() : id(ch1).turn_off();'
+    - topic: ${device_name}/relay/2
+      then:
+        - lambda: 'x.find("1") != std::string::npos ? id(ch2).turn_on() : id(ch2).turn_off();'
+    - topic: ${device_name}/relay/3
+      then:
+        - lambda: 'x.find("1") != std::string::npos ? id(ch3).turn_on() : id(ch3).turn_off();'
+    - topic: ${device_name}/relay/4
+      then:
+        - lambda: 'x.find("1") != std::string::npos ? id(ch4).turn_on() : id(ch4).turn_off();'
+    - topic: ${device_name}/relay/5
+      then:
+        - lambda: 'x.find("1") != std::string::npos ? id(ch5).turn_on() : id(ch5).turn_off();'
+    - topic: ${device_name}/relay/6
+      then:
+        - lambda: 'x.find("1") != std::string::npos ? id(ch6).turn_on() : id(ch6).turn_off();'
+    - topic: ${device_name}/relay/all
+      then:
+        - lambda: |-
+            bool on = x.find("1") != std::string::npos;
+            if (on) {
+              id(ch1).turn_on();  id(ch2).turn_on();  id(ch3).turn_on();
+              id(ch4).turn_on();  id(ch5).turn_on();  id(ch6).turn_on();
+            } else {
+              id(ch1).turn_off(); id(ch2).turn_off(); id(ch3).turn_off();
+              id(ch4).turn_off(); id(ch5).turn_off(); id(ch6).turn_off();
+            }
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "CET-1CEST,M3.5.0,M10.5.0/3"
+
+globals:
+  - id: open_ap_ssid
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: open_ap_rssi
+    type: int
+    restore_value: false
+    initial_value: '-127'
+  - id: open_ap_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+script:
+  # Offene APs suchen und den besten bevorzugen (f24 bleibt Fallback)
+  - id: scan_open
+    mode: single
+    then:
+      - lambda: |-
+          OpenApResult r = ow_find_open("${ap_ssid}");
+          id(open_ap_ssid)  = r.ssid;
+          id(open_ap_rssi)  = r.rssi;
+          id(open_ap_count) = r.count;
+          ow_prefer(r.ssid, "${wifi_ssid}", "${wifi_password}");
+
+sensor:
+  - platform: wifi_signal
+    id: rssi_sensor
+    name: "WiFi RSSI"
+    update_interval: 60s
+
+switch:
+  - platform: gpio
+    id: ch1
+    name: "CH1"
+    pin: GPIO1
+    restore_mode: ALWAYS_OFF
+  - platform: gpio
+    id: ch2
+    name: "CH2"
+    pin: GPIO2
+    restore_mode: ALWAYS_OFF
+  - platform: gpio
+    id: ch3
+    name: "CH3"
+    pin: GPIO41
+    restore_mode: ALWAYS_OFF
+  - platform: gpio
+    id: ch4
+    name: "CH4"
+    pin: GPIO42
+    restore_mode: ALWAYS_OFF
+  - platform: gpio
+    id: ch5
+    name: "CH5"
+    pin: GPIO45
+    restore_mode: ALWAYS_OFF
+  - platform: gpio
+    id: ch6
+    name: "CH6"
+    pin: GPIO46
+    restore_mode: ALWAYS_OFF
+
+interval:
+  # Offene APs alle 5 min neu scannen (blockiert ~1,3 s, unkritisch)
+  - interval: 5min
+    then:
+      - script.execute: scan_open
+
+  # Watchdog: am offenen AP ohne MQTT -> blacklisten, zurück auf f24
+  - interval: 30s
+    then:
+      - lambda: |-
+          ow_watchdog(id(mqtt_client).is_connected(), ${open_mqtt_timeout},
+                      "${wifi_ssid}", "${wifi_password}");
+
+  # Board-Telemetrie: Name, IP, RSSI, offener AP, Relaiszustände — retain=false
+  - interval: 30s
+    then:
+      - lambda: |-
+          std::string ip = "-";
+          for (auto &a : id(wifi_comp).wifi_sta_ip_addresses()) {
+            if (a.is_set() && a.is_ip4()) { ip = a.str(); break; }
+          }
+          std::string ssid = ow_current_ssid();
+          char js[480];
+          snprintf(js, sizeof(js),
+            "{\"name\":\"%s\",\"ip\":\"%s\",\"ssid\":\"%s\",\"rssi\":%d,"
+            "\"open_ap\":\"%s\",\"open_rssi\":%d,\"open_count\":%d,"
+            "\"relays\":[%d,%d,%d,%d,%d,%d],"
+            "\"uptime\":%u,\"mem_free\":%u,"
+            "\"fw\":\"%s\",\"rs485\":\"defekt\"}",
+            "${device_name}",
+            ip.c_str(),
+            json_escape(ssid).c_str(),
+            (int) id(rssi_sensor).state,
+            id(open_ap_ssid).c_str(), id(open_ap_rssi), id(open_ap_count),
+            id(ch1).state ? 1 : 0, id(ch2).state ? 1 : 0, id(ch3).state ? 1 : 0,
+            id(ch4).state ? 1 : 0, id(ch5).state ? 1 : 0, id(ch6).state ? 1 : 0,
+            (unsigned) (millis() / 1000), (unsigned) ESP.getFreeHeap(),
+            "${fw_version}");
+          id(mqtt_client).publish(std::string("${device_name}/status"),
+                                  std::string(js), 0, false);
