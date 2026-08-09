@@ -113,41 +113,9 @@ inline void ow_consider_(OpenApResult &r, const std::string &ssid, int rssi, con
   ESP_LOGI("open_wifi", "  offen: '%s' RSSI=%d", ssid.c_str(), rssi);
 }
 
-// Auswahl: Vorzugsliste schlägt RSSI. prefs = kommagetrennte SSIDs.
-//
-// Warum nicht einfach der stärkste: der stärkste offene AP kann in einem
-// fremden Subnetz liegen (OpenWrtDach -> 192.168.4.x), aus dem das Board
-// weder per OTA noch sonst erreichbar ist. Ein etwas schwächerer AP im
-// eigenen Netz (f7240 -> 192.168.178.x) ist praktisch mehr wert.
-inline void ow_pick_(OpenApResult &r, const char *prefs) {
-  std::string list(prefs);
-  size_t pos = 0;
-  while (pos <= list.size()) {
-    size_t comma = list.find(',', pos);
-    if (comma == std::string::npos)
-      comma = list.size();
-    std::string want = list.substr(pos, comma - pos);
-    while (!want.empty() && want.front() == ' ')
-      want.erase(want.begin());
-    while (!want.empty() && want.back() == ' ')
-      want.pop_back();
-
-    if (!want.empty()) {
-      for (const auto &c : ow_cands) {
-        if (c.first == want) {
-          r.ssid = c.first;
-          r.rssi = c.second;
-          ESP_LOGI("open_wifi", "Vorzug: '%s' (%d dBm)", r.ssid.c_str(), r.rssi);
-          return;
-        }
-      }
-    }
-    if (comma == list.size())
-      break;
-    pos = comma + 1;
-  }
-
-  for (const auto &c : ow_cands) {  // sonst der stärkste
+// Auswahl: schlicht der stärkste offene AP — unabhängig vom Subnetz.
+inline void ow_pick_(OpenApResult &r) {
+  for (const auto &c : ow_cands) {
     if (c.second > r.rssi) {
       r.rssi = c.second;
       r.ssid = c.first;
@@ -211,13 +179,12 @@ inline OpenApResult ow_scan(const char *own_ap_ssid) {
 }
 
 // Eigener Scan bevorzugt, sonst ESPHomes letzte Scan-Ergebnisse.
-// prefs = kommagetrennte Wunsch-SSIDs, schlagen den RSSI-Vergleich.
-inline OpenApResult ow_find_open(const char *own_ap_ssid, const char *prefs) {
+inline OpenApResult ow_find_open(const char *own_ap_ssid) {
   ow_cands.clear();
   OpenApResult r = ow_scan(own_ap_ssid);
   if (r.count == 0)
     r = ow_from_esphome_scan(own_ap_ssid);
-  ow_pick_(r, prefs);
+  ow_pick_(r);
   ESP_LOGI("open_wifi", "%d offene APs, gewählt '%s' (%d dBm)", r.count,
            r.ssid.empty() ? "-" : r.ssid.c_str(), r.rssi);
   return r;

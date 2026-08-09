@@ -97,16 +97,26 @@ esphome upload rs485defect.yaml --device <ip-aus-status>
 WLAN bevorzugt. Verifiziert: Rückkehr auf `f24` (`192.168.178.58`, RSSI −56),
 OTA-Upload in 3,66 s, `OTA successful`.
 
-## Messwerte (Standort Schreibtisch)
+## Auswahl: bester RSSI, Subnetz egal
 
-| SSID | RSSI | offen |
-|---|---:|:-:|
-| `OpenWrtDach` | −63 … −69 dBm | ja → gewählt |
-| `f7240` (Freetz-Repeater) | −83 dBm | ja |
-| `ESP_F5246E` | −76 dBm | ja, aber Geräte-AP → gefiltert |
+Gewählt wird schlicht der stärkste offene AP. Dass der in einem fremden Subnetz
+liegen kann (und OTA dann nur noch über USB oder nach `{"ENABLE":0}` geht), ist
+bewusst in Kauf genommen.
 
-`OpenWrtDach` hat Routing zum Broker, MQTT läuft darüber weiter — der Watchdog
-schlägt dort also nicht zu.
+Verifiziert am Schreibtisch (fw 1.4):
+
+```
+[I][open_wifi:113]:   offen: 'OpenWrtDach'     RSSI=-68
+[I][open_wifi:113]:   offen: 'FRITZ!Box 7490'  RSSI=-88
+[I][open_wifi:113]:   offen: 'f7240'           RSSI=-91
+[I][open_wifi:188]: 3 offene APs, gewählt 'OpenWrtDach' (-68 dBm)
+```
+
+Verbunden auf `OpenWrtDach`, IP `192.168.4.249`, MQTT läuft darüber weiter —
+der Watchdog schlägt dort also nicht zu. `ESP_F5246E` erscheint nicht in der
+Liste: Geräte-AP, per Präfixfilter raus.
+
+RSSI ist stark standortabhängig — dasselbe `f7240` misst am Prod-Board −50 dBm.
 
 Der eigene MQTT-Prefix hält die Produktions-Topics `waveshare/relay/*` des
 Boards `192.168.178.187` frei — sonst würden beide Boards mitschalten.

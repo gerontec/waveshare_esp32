@@ -31,9 +31,8 @@ substitutions:
   wifi_password: "9876543210"
   ota_password: waveshare2026
   ap_ssid: Sofar-Waveshare-AP
-  open_prefer: f7240            # Vorzug vor RSSI: liegt in 192.168.178.x
   open_mqtt_timeout: "300000"   # ms ohne MQTT am offenen AP -> Blacklist
-  fw_version: "3.5.0"      # offenes WLAN bevorzugt (open_wifi_join.h), f24 Fallback
+  fw_version: "3.5.1"      # offenes WLAN mit bestem RSSI (open_wifi_join.h), f24 Fallback
 
 esphome:
   name: ${device_name}
@@ -169,7 +168,7 @@ script:
       - lambda: |-
           if (!id(open_enabled))
             return;
-          OpenApResult r = ow_find_open("${ap_ssid}", "${open_prefer}");
+          OpenApResult r = ow_find_open("${ap_ssid}");
           id(open_ap_ssid)  = r.ssid;
           id(open_ap_rssi)  = r.rssi;
           id(open_ap_count) = r.count;
