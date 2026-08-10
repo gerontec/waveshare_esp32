@@ -14,6 +14,14 @@
 //    wurde -> setup() lief nie. Hier sind es reine Funktionen, die aus
 //    ESPHome-Lambdas gerufen werden; kein Registrierungsproblem.
 //
+//  Warum NICHT die External Component components/open_wifi (wie Gassensor):
+//    Am 10.08.2026 als v3.6.0 versucht. Die Komponente scannt in setup() bei
+//    Priority 350, also bevor ESPHomes WiFiComponent den ESP32-WLAN-Stack
+//    initialisiert. Auf dem ESP8266 traegt das; auf dem ESP32-S3 kam das Board
+//    nach dem Flash nicht mehr hoch — kein WLAN, kein MQTT, auch nach dem
+//    reboot_timeout nicht, Rettung nur per USB. Der Laufzeit-Scan hier ist der
+//    fuer diesen Chip belegte Weg.
+//
 //  Ablauf:
 //    1. ow_scan()     blockierender Passiv-Scan (~1,3 s), bester offener AP
 //    2. ow_prefer()   STA-Liste neu bauen: offener AP prio 10, f24 prio 0.
@@ -65,6 +73,13 @@ inline bool ow_is_device_ap(const std::string &ssid) {
   return false;
 }
 
+// Schwächer als das hier wird nicht mehr als Ziel angenommen (wie beim
+// Gassensor, components/open_wifi: min_rssi). Ohne diese Grenze stand
+// 'OpenWrtDach' mit -93 dBm als Kandidat in der Liste — ein AP, der in ein
+// unerreichbares 192.168.4.x führt und nur deshalb nie gewählt wurde, weil
+// f7240 stärker ist. Fällt f7240 aus, wäre das Board dort gelandet.
+static const int OW_MIN_RSSI = -85;
+
 inline bool ow_is_blacklisted(const std::string &ssid) {
   for (const auto &b : ow_blacklist)
     if (b == ssid)
@@ -98,6 +113,11 @@ inline void ow_consider_(OpenApResult &r, const std::string &ssid, int rssi, con
     ESP_LOGD("open_wifi", "  ignoriert (Geräte-AP): '%s' RSSI=%d", ssid.c_str(), rssi);
     return;
   }
+  if (rssi < OW_MIN_RSSI) {
+    ESP_LOGI("open_wifi", "  ignoriert (zu schwach): '%s' RSSI=%d < %d", ssid.c_str(), rssi,
+             OW_MIN_RSSI);
+    return;
+  }
   if (ow_is_blacklisted(ssid))
     return;
 
@@ -124,8 +144,10 @@ inline void ow_pick_(OpenApResult &r) {
 }
 
 // Quelle 1: ESPHomes eigene Scan-Ergebnisse (get_with_auth() == false -> offen).
-// Kostet nichts und stört die WiFi-Statemachine nicht; ESPHome scannt bei jedem
-// (Re-)Connect neu.
+// Kostet nichts und stört die WiFi-Statemachine nicht. Als alleinige Quelle
+// taugt sie nicht: im laufenden Betrieb ist die Liste leer (am 10.08.2026 als
+// v3.5.4 gemessen -> "0 offene APs"), sie fuellt sich nur rund um einen
+// (Re-)Connect. Deshalb nur als Rueckfallebene.
 inline OpenApResult ow_from_esphome_scan(const char *own_ap_ssid) {
   OpenApResult r{"", -127, 0};
   auto *wc = esphome::wifi::global_wifi_component;
@@ -142,6 +164,13 @@ inline OpenApResult ow_from_esphome_scan(const char *own_ap_ssid) {
 // Quelle 2: eigener blockierender Passiv-Scan (~1,3 s) für frische Daten,
 // während die Verbindung steht. Liefert gelegentlich 0 Treffer, wenn ESPHome
 // gerade selbst scannt — dann übernimmt der Aufrufer Quelle 1.
+//
+// Nebenwirkung, bekannt und in Kauf genommen: das SCAN_DONE-Event geht auch an
+// ESPHome, dessen Handler die Records dann nicht mehr vorfindet und
+// "esp_wifi_scan_get_ap_record failed: ESP_FAIL" loggt. Die STA-Liste setzen
+// wir ohnehin selbst; der Versuch, das sauber zu loesen (v3.5.4 passiv, v3.6.0
+// Component), hat einmal die Entscheidung unmoeglich gemacht und einmal das
+// Board lahmgelegt.
 inline OpenApResult ow_scan(const char *own_ap_ssid) {
   OpenApResult r{"", -127, 0};
 

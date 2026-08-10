@@ -12,6 +12,33 @@ Board: MAC `50:78:7D:07:FF:E4`, Gerätename `rs485defect-wav-esp32s3`.
 |---|---|
 | `rs485defect.yaml` | ESPHome-Konfiguration |
 | `open_wifi_join.h` | Lib: offenes WLAN bevorzugen, `f24` als Fallback |
+| `usb_mux.h` | Lib: zwei logische Kanäle auf der USB-Leitung (Transport) |
+| `usbmux.c` + `Makefile` | Host-Daemon: hält `/dev/ttyACM0`, bietet Steuerung, Log und einen rohen Kanal an |
+| `usbmux_stress.sh` | Belastungs- und Korrektheitstest für den Mux |
+| `usbmux.md` | Doku dazu: Protokoll, Grenzen, PTY-Messungen, Fallstricke |
+
+## USB-Multiplex (seit 1.5)
+
+Der ESP32-S3 hat nur ein USB-Serial-Interface — wer `/dev/ttyACM0` öffnet, hat es
+exklusiv. `usbmux` teilt es zeilenweise auf: Steuerung (Präfix `#K1# `), Log und
+ein roher Durchreichkanal für esptool. Steuerung läuft damit auch dann, wenn das
+Board am offenen AP in `192.168.4.x` hängt und weder OTA noch MQTT herankommen.
+
+```bash
+make usbmux
+./usbmux daemon &
+./usbmux cmd status      # Steuerung
+./usbmux mon             # Log, beliebig oft parallel
+./usbmux esptool flash_id
+```
+
+Fremdwerkzeuge bekommen PTYs mit festen Symlinks und merken nichts vom Mux:
+
+```bash
+esphome logs rs485defect.yaml --device $XDG_RUNTIME_DIR/usbmux/tty-log-ttyACM0
+```
+
+Details in [usbmux.md](usbmux.md).
 
 ## Relais
 
