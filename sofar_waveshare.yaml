@@ -28,11 +28,11 @@ substitutions:
   device_name: sofar-waveshare
   mqtt_broker: 192.168.178.218
   wifi_ssid: f24
-  wifi_password: "9876543210"
-  ota_password: waveshare2026
+  wifi_password: "YOUR_WIFI_PASSWORD"
+  ota_password: "YOUR_OTA_PASSWORD"
   ap_ssid: Sofar-Waveshare-AP
   open_mqtt_timeout: "300000"   # ms ohne MQTT am offenen AP -> Blacklist
-  fw_version: "3.5.1"      # offenes WLAN mit bestem RSSI (open_wifi_join.h), f24 Fallback
+  fw_version: "3.5.6"      # 3.5.5 + WLAN-Aufnahme im RAM (Scan unveraendert), MQTT .../survey
 
 esphome:
   name: ${device_name}
@@ -93,7 +93,7 @@ uart:
   rx_buffer_size: 256
 
 globals:
-  # Offenes WLAN (open_wifi_join.h)
+  # Offenes WLAN (Component open_wifi, nur fuer die Status-JSONs)
   - { id: open_ap_ssid,  type: std::string, restore_value: false, initial_value: '""' }
   - { id: open_ap_rssi,  type: int,  restore_value: false, initial_value: '-127' }
   - { id: open_ap_count, type: int,  restore_value: false, initial_value: '0' }
@@ -159,9 +159,10 @@ switch:
 
 script:
   # ── Offene APs suchen und bevorzugen (f24 bleibt Fallback) ───────────────
-  # Der Scan blockiert die Hauptschleife ~1,3 s, der Reconnect dauert länger.
-  # Der Soyo-Keepalive (TX alle 3 s, Timeout 4 s) läuft in dieser Zeit aus und
-  # der Soyo geht kurzzeitig auf 0 W — bewusst in Kauf genommen.
+  # Seit v3.5.4 ohne eigenen Radio-Scan: es werden nur ESPHomes Scan-Ergebnisse
+  # ausgewertet. Damit entfällt die ~1,3-s-Blockade der Hauptschleife, und der
+  # Soyo-Keepalive (TX alle 3 s, Timeout 4 s) läuft nicht mehr aus.
+  # Ein Reconnect kann die Komponente weiterhin auslösen.
   - id: scan_open
     mode: single
     then:
@@ -463,6 +464,27 @@ interval:
       - lambda: |-
           ow_watchdog(id(mqtt_client).is_connected(), ${open_mqtt_timeout},
                       "${wifi_ssid}", "${wifi_password}");
+
+  # ── WLAN-Aufnahme melden, sobald der Broker da ist ───────────────────────
+  #
+  # Das ist NICHT die Survey, die in 3.5.4/3.6.0 Ärger gemacht hat. Damals lag
+  # der Eingriff im Scan selbst (erst passiv, dann als Component) — einmal war
+  # die Entscheidung danach unmöglich, einmal stand das Board. Hier bleibt der
+  # Scan unangetastet: mitgeschrieben wird nur, was er ohnehin zurückgibt, in
+  # einen RAM-Puffer von ~1,2 kB.
+  #
+  # RETAINED, damit ein später dazukommender Abonnent die letzte Ausleuchtung
+  # sofort bekommt; age_ms im JSON macht eine alte Aufnahme als alt erkennbar.
+  # Beide Argumente ausdrücklich als std::string, sonst greift die Überladung
+  # publish(topic, payload, payload_length, qos) und retain bliebe still false.
+  - interval: 10s
+    then:
+      - lambda: |-
+          if (!ow_survey_pending || !id(mqtt_client).is_connected())
+            return;
+          if (id(mqtt_client).publish(std::string("sofar/waveshare/survey"),
+                                      ow_survey_json(), 0, true))
+            ow_survey_pending = false;   // nur bei Erfolg, sonst beim nächsten Takt
 
   # ── Entscheidungs-Zyklus (wie Cron, 60s) ─────────────────────────────────
   - interval: 60s
