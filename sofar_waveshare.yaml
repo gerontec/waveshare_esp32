@@ -32,7 +32,7 @@ substitutions:
   ota_password: "YOUR_OTA_PASSWORD"
   ap_ssid: Sofar-Waveshare-AP
   open_mqtt_timeout: "300000"   # ms ohne MQTT am offenen AP -> Blacklist
-  fw_version: "3.5.6"      # 3.5.5 + WLAN-Aufnahme im RAM (Scan unveraendert), MQTT .../survey
+  fw_version: "3.6.2"      # 3.6.1 + Kanal A wieder auf soyo_w/soyo_set statt Testwert A_W
 
 esphome:
   name: ${device_name}
@@ -40,6 +40,7 @@ esphome:
   includes:
     - fox2db_logic.h
     - open_wifi_join.h
+    - rs485_mux.h
   on_boot:
     priority: -100
     then:
@@ -658,29 +659,33 @@ interval:
           static uint32_t last_rx_ms = 0;
           uint32_t now = millis();
 
-          // Soyo TX: alle 3s — geprüft alle 50ms → max. 50ms Verzögerung (Soyo-Timeout=4s)
-          if (now - last_soyo_tx >= 3000UL) {
-            last_soyo_tx = now;
+          // Soyo TX über rs485_mux, Kanal A, Takt A_PERIOD_MS (3800 ms).
+          // Sollwert wieder aus der Regelung bzw. per MQTT soyo/set; ohne
+          // frische Vorgabe (90 s) fällt er auf 0 — wie vor dem Mux.
+          // Kanal B ist per B_ENABLE=false stumm.
+          // "dt" im JSON = tatsächlicher Abstand zweier Sendungen — damit ist
+          // am Broker prüfbar, ob der Takt gegen das 4-s-Soyo-Timeout hält.
+          static rs485_mux::State mux_st;
+          if (rs485_mux::tick(mux_st, now, buf) == rs485_mux::ACT_A_TX) {
             int w = id(soyo_w);
-            if (now - (uint32_t)id(soyo_ms) > 90000UL) w = 0;
-            uint8_t ph = (w >> 8) & 0xFF, pl = w & 0xFF;
-            uint8_t crc = (264 - ph - pl) & 0xFF;
-            uint8_t f[8] = {0x24, 0x56, 0x00, 0x21, ph, pl, 0x80, crc};
+            if (now - (uint32_t) id(soyo_ms) > 90000UL) w = 0;
+            uint8_t f[8];
+            rs485_mux::a_frame(f, w);
             id(rs485).write_array(f, 8);
             id(rs485).flush();
+            send_count++;
             char hex[20];
             snprintf(hex, sizeof(hex), "%02X%02X%02X%02X%02X%02X%02X%02X",
                      f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
-            send_count++;
             bool changed = (strcmp(hex, prev_hex) != 0);
             if (changed) { change_count++; strncpy(prev_hex, hex, sizeof(prev_hex)); }
-            if (changed) {
-              char js[160];
-              snprintf(js, sizeof(js),
-                "{\"w\":%d,\"hex\":\"%s\",\"sends\":%lu,\"changes\":%lu}",
-                w, hex, send_count, change_count);
-              id(mqtt_client).publish("soyo/sent", js);
-            }
+            char js[200];
+            snprintf(js, sizeof(js),
+              "{\"w\":%d,\"hex\":\"%s\",\"sends\":%lu,\"changes\":%lu,\"dt\":%lu,\"mux\":\"A\"}",
+              w, hex, send_count, change_count,
+              (unsigned long) (now - last_soyo_tx));
+            last_soyo_tx = now;
+            id(mqtt_client).publish("soyo/sent", js);
           }
 
           // RX: Frame-Empfang (25ms Gap-Erkennung)

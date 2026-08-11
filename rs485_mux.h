@@ -24,7 +24,9 @@
 namespace rs485_mux {
 
 // ── Kanal A: Soyo ────────────────────────────────────────────────────────────
-constexpr uint32_t A_PERIOD_MS = 4000;   // Sendetakt (Gerät verliert nach 4 s)
+// 3800 statt 4000: das 50-ms-Raster der Lambda dehnte den Ist-Takt auf
+// gemessene 4003..4047 ms — jeder Wert über dem 4-s-Timeout des Soyo.
+constexpr uint32_t A_PERIOD_MS = 3800;   // Sendetakt (Gerät verliert nach 4 s)
 constexpr int      A_W         = 10;     // Sollwert der Testfahrt (W)
 constexpr uint32_t A_BAUD      = 4800;   // fest, nicht verhandelbar
 constexpr uint32_t A_GUARD_MS  = 600;    // so lange vor A's Termin ist B tabu
